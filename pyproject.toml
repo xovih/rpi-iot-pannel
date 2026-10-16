@@ -9,7 +9,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-raspberry-pi = ["RPi.GPIO>=0.7.1"]
+# Di Raspberry Pi OS pakai paket OS `python3-rpi-lgpio` (lihat README);
+# ekstra ini hanya untuk sistem tanpa paket tersebut.
+raspberry-pi = ["rpi-lgpio>=0.6"]
 dev = ["pytest>=8,<9"]
 # Membekukan panel menjadi satu executable (build-executable.sh).
 build = ["pyinstaller>=6,<7"]

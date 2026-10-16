@@ -13,12 +13,9 @@ VENV="$HERE/.venv"
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv --system-site-packages "$VENV"
 fi
-EXTRA="build"
-if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null; then
-  EXTRA="build,raspberry-pi"
-fi
 "$VENV/bin/python" -m pip install --upgrade pip
-"$VENV/bin/python" -m pip install -e ".[${EXTRA}]"
+# Driver GPIO dari paket OS (python3-rpi-lgpio), bukan RPi.GPIO pip.
+"$VENV/bin/python" -m pip install -e ".[build]"
 
 HIDDEN=()
 if "$VENV/bin/python" -c "import RPi.GPIO" 2>/dev/null; then

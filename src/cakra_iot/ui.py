@@ -735,8 +735,23 @@ class PanelWindow(QMainWindow):
             application.focusChanged.connect(self.remember_input)
         self.update_heading()
 
-        self.gpio = GpioManager(config.all_slots, config.gpio_mode, self.on_pulse)
-        self.gpio.start()
+        self.gpio = GpioManager(config.all_slots, config.gpio_mode, self.on_pulse, config)
+        self.gpio_error: str | None = None
+        try:
+            self.gpio.start()
+        except Exception as exc:  # noqa: BLE001 — galat driver GPIO beragam
+            # Panel tetap terbuka untuk antrean/operator, tetapi counter mati;
+            # teknisi harus tahu sebabnya tanpa membuka terminal.
+            self.gpio_error = str(exc) or exc.__class__.__name__
+            QTimer.singleShot(
+                500,
+                lambda: alert(
+                    self,
+                    "GPIO tidak aktif",
+                    f"Counter sensor tidak terbaca: {self.gpio_error}. Jalankan "
+                    "bash gpio-test.sh untuk diagnosis (lihat panduan pemasangan).",
+                ),
+            )
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self.refresh_ui)
         self.ui_timer.start(250)
@@ -1040,8 +1055,10 @@ class PanelWindow(QMainWindow):
             self.connection_reason = reason
         if online:
             self.connection_reason = "Backend dan device token tervalidasi."
+            gpio = "GPIO ERROR" if getattr(self, "gpio_error", None) else f"GPIO {self.config.gpio_mode}"
             self.status.setText(
-                f"ONLINE  ·  {self.config.api_base_url}  ·  {len(self.pages)} mesin  ·  telemetry aktif"
+                f"ONLINE  ·  {self.config.api_base_url}  ·  {len(self.pages)} mesin  ·  "
+                f"{gpio}  ·  telemetry aktif"
             )
             self.status.setStyleSheet("color:#168647;font-weight:800")
         else:

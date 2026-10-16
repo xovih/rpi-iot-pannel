@@ -21,11 +21,15 @@ if [ ! -x "$VENV/bin/python" ]; then
   echo "Menyiapkan .venv pertama kali…"
   python3 -m venv --system-site-packages "$VENV"
   "$VENV/bin/python" -m pip install --upgrade pip
-  EXTRA=""
-  if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null; then
-    EXTRA="[raspberry-pi]"
-  fi
-  "$VENV/bin/python" -m pip install -e ".${EXTRA}"
+  # Driver GPIO sengaja TIDAK dipasang lewat pip: RPi.GPIO 0.7.x gagal edge
+  # detection di kernel Bookworm. Pakai paket OS python3-rpi-lgpio yang
+  # terbaca lewat --system-site-packages.
+  "$VENV/bin/python" -m pip install -e .
+fi
+# Venv lama mungkin sudah berisi RPi.GPIO dari pip yang menutupi rpi-lgpio.
+if compgen -G "$VENV/lib/python3*/site-packages/RPi.GPIO-*" >/dev/null; then
+  echo "Melepas RPi.GPIO pip dari .venv (diganti python3-rpi-lgpio)…"
+  "$VENV/bin/python" -m pip uninstall -y RPi.GPIO || true
 fi
 
 exec "$VENV/bin/python" -m cakra_iot "$@"

@@ -9,6 +9,12 @@ from typing import Any
 
 CONFIG_FILENAME = "config.json"
 
+# Pin BCM yang dapat dipakai sebagai input counter pada header 40-pin Pi 4.
+VALID_BCM_PINS = range(2, 28)
+# Pin yang punya fungsi khusus: 2/3 memiliki pull-up eksternal 1,8 kΩ (I2C),
+# 14/15 dipakai UART konsol. Boleh dipakai, tetapi diberi peringatan.
+CAUTION_BCM_PINS = {2: "I2C SDA", 3: "I2C SCL", 14: "UART TX", 15: "UART RX"}
+
 
 @dataclass(frozen=True)
 class CounterSlot:
@@ -44,6 +50,11 @@ class AppConfig:
     recovery_csv_path: Path
     counters: tuple[CounterConfig, ...]
     source: Path | None = None
+    # Rangkaian baku: proximity 24 V → optocoupler → kolektor menarik pin ke
+    # GND saat sensor aktif. Karena itu pull-up internal + tepi turun.
+    gpio_pull: str = "up"
+    gpio_edge: str = "falling"
+    gpio_bounce_ms: int = 110
 
     def counter_for(self, dal: str) -> CounterConfig | None:
         key = dal.strip().upper()
@@ -89,6 +100,12 @@ class AppConfig:
         if len(codes) != len(set(codes)):
             raise ValueError("Kode logical counter tidak boleh kembar.")
         pins = [pin for slot in slots for pin in slot.pins]
+        invalid = sorted({pin for pin in pins if pin not in VALID_BCM_PINS})
+        if invalid:
+            raise ValueError(
+                f"Pin {', '.join(map(str, invalid))} bukan nomor BCM GPIO yang sah (2-27). "
+                "Gunakan nomor BCM, bukan nomor fisik header."
+            )
         if len(pins) != len(set(pins)):
             raise ValueError("Satu pin GPIO tidak boleh dipakai oleh lebih dari satu logical counter.")
         if not str(raw.get("api_base_url", "")).strip():
@@ -113,7 +130,17 @@ class AppConfig:
             recovery_csv_path=local(str(raw.get("recovery_csv_path", "data/recovery.csv"))),
             counters=counters,
             source=source,
+            gpio_pull=choice(raw, "gpio_pull", ("up", "down", "off"), "up"),
+            gpio_edge=choice(raw, "gpio_edge", ("falling", "rising", "both"), "falling"),
+            gpio_bounce_ms=min(1000, max(1, int(raw.get("gpio_bounce_ms", 110)))),
         )
+
+
+def choice(raw: dict[str, Any], key: str, allowed: tuple[str, ...], default: str) -> str:
+    value = str(raw.get(key, default)).strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{key} harus salah satu dari: {', '.join(allowed)}.")
+    return value
 
 
 def app_dir() -> Path:

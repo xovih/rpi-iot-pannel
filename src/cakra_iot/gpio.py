@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from .config import CounterSlot
+from .config import AppConfig, CounterSlot
 
 
 class PulseBridge(QObject):
@@ -17,10 +17,17 @@ class GpioManager:
     sensor fisik tetap menghitung walau mesinnya belum dipetakan backend."""
 
     def __init__(
-        self, slots: tuple[CounterSlot, ...], mode: str, on_pulse: Callable[[str], None]
+        self,
+        slots: tuple[CounterSlot, ...],
+        mode: str,
+        on_pulse: Callable[[str], None],
+        config: AppConfig | None = None,
     ) -> None:
         self.slots = slots
         self.mode = mode
+        self.pull = config.gpio_pull if config else "up"
+        self.edge = config.gpio_edge if config else "falling"
+        self.bounce_ms = config.gpio_bounce_ms if config else 110
         self.bridge = PulseBridge()
         self.bridge.pulse.connect(on_pulse)
         self._gpio = None
@@ -34,14 +41,17 @@ class GpioManager:
             raise RuntimeError("Mode GPIO real dipilih tetapi RPi.GPIO tidak tersedia.") from exc
         self._gpio = GPIO
         GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        pull = {"up": GPIO.PUD_UP, "down": GPIO.PUD_DOWN, "off": GPIO.PUD_OFF}[self.pull]
+        edge = {"falling": GPIO.FALLING, "rising": GPIO.RISING, "both": GPIO.BOTH}[self.edge]
         for slot in self.slots:
             for pin in slot.pins:
-                GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                GPIO.setup(pin, GPIO.IN, pull_up_down=pull)
                 GPIO.add_event_detect(
                     pin,
-                    GPIO.FALLING,
+                    edge,
                     callback=lambda _pin, code=slot.code: self.bridge.pulse.emit(code),
-                    bouncetime=110,
+                    bouncetime=self.bounce_ms,
                 )
 
     def simulate(self, slot_code: str) -> None:
