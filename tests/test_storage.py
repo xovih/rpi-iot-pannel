@@ -28,6 +28,19 @@ class StorageTest(unittest.TestCase):
             self.assertTrue((root / "recovery.csv").read_text(encoding="utf-8").startswith("recorded_at"))
             recovered.close()
 
+    def test_ui_state_survives_power_loss(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = LocalStore(root / "panel.db", root / "recovery.csv")
+            store.set_state("operators:I.1", [{"npp": "05818", "name": "Solihan"}])
+            store.set_state("selected_machine", "I.1")
+            store.close()  # setara proses mati mendadak setelah commit
+            recovered = LocalStore(root / "panel.db", root / "recovery.csv")
+            self.assertEqual(recovered.get_state("operators:I.1")[0]["npp"], "05818")
+            self.assertEqual(recovered.get_state("selected_machine"), "I.1")
+            self.assertEqual(recovered.get_state("tidak-ada", []), [])
+            recovered.close()
+
 
 class ConfigTest(unittest.TestCase):
     def write(self, directory: str, raw: dict[str, object]) -> Path:

@@ -12,6 +12,7 @@ TONES = {
     "error": (DANGER, "✕"),
     "warning": (WARNING, "!"),
     "question": (PURPLE, "?"),
+    "info": (PURPLE, "i"),
 }
 
 

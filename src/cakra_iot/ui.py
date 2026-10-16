@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QSize, QTimer, Qt
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 from .api import ApiClient, ApiError
 from .config import AppConfig, CounterSlot
 from .dialogs import alert, confirm
+from .icons import play_icon, stop_icon, trash_icon
 from .gpio import GpioManager
 from .storage import LocalStore
 
@@ -70,24 +71,129 @@ class PanelMachine:
 
 
 class FinishDialog(QDialog):
-    def __init__(self, yield_qty: int, parent: QWidget | None = None) -> None:
+    """Konfirmasi Finish (revisi 16 Okt 2026).
+
+    Hasil baik dari counter dibatasi sisa qty peti pada tahapan ini; backend
+    menolak hasil kumulatif yang melampaui qty peti. Operator memilih apakah
+    operator terinput dan peti terproses dihapus dari panel setelah Finish.
+    """
+
+    def __init__(
+        self,
+        counter_qty: int,
+        lot_qty: int,
+        processed_qty: int,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Konfirmasi Finish")
-        self.setMinimumWidth(460)
-        form = QFormLayout(self)
-        good = QLabel(number(yield_qty))
-        good.setStyleSheet("font-size:32px;font-weight:800")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setObjectName("finishDialog")
+        self.setFixedWidth(640)
+        self.remaining = max(0, lot_qty - processed_qty)
+        self.yield_qty = min(counter_qty, self.remaining)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(26, 22, 26, 22)
+        layout.setSpacing(14)
+        layout.addWidget(QLabel("KONFIRMASI FINISH", objectName="finishTitle"))
+
+        facts = QGridLayout()
+        facts.setHorizontalSpacing(12)
+        for column, (label, value) in enumerate(
+            [
+                ("QTY LOT", number(lot_qty)),
+                ("SUDAH TERPROSES", number(processed_qty)),
+                ("HASIL BAIK SESI INI", number(self.yield_qty)),
+            ]
+        ):
+            caption = QLabel(label, objectName="finishCaption", alignment=Qt.AlignCenter)
+            figure = QLabel(value, objectName="finishFigure", alignment=Qt.AlignCenter)
+            facts.addWidget(caption, 0, column)
+            facts.addWidget(figure, 1, column)
+        layout.addLayout(facts)
+        if counter_qty > self.yield_qty:
+            note = QLabel(
+                f"Counter membaca {number(counter_qty)}; hasil baik dibatasi sisa qty lot "
+                f"{number(self.remaining)}.",
+                objectName="finishNote",
+            )
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
+        form = QFormLayout()
+        form.setSpacing(10)
         self.reject_qty = QSpinBox()
-        self.reject_qty.setRange(0, 10_000_000)
+        self.reject_qty.setRange(0, max(0, self.remaining - self.yield_qty))
+        self.reject_qty.valueChanged.connect(self.refresh_options)
         self.obstacle = QLineEdit()
         self.obstacle.setPlaceholderText("Opsional — pilih/tulis kendala PMS")
-        form.addRow("Hasil baik (counter)", good)
         form.addRow("Jumlah reject", self.reject_qty)
         form.addRow("Kendala", self.obstacle)
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        layout.addLayout(form)
+
+        self.clear_operators = QCheckBox("Hapus operator terinput setelah Finish")
+        self.clear_operators.setChecked(True)
+        self.remove_lot = QCheckBox("Hapus peti terproses dari antrean")
+        self.remove_lot.setChecked(True)
+        self.lot_note = QLabel(objectName="finishNote")
+        self.lot_note.setWordWrap(True)
+        layout.addWidget(self.clear_operators)
+        layout.addWidget(self.remove_lot)
+        layout.addWidget(self.lot_note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("BATAL", objectName="finishSecondary")
+        cancel.clicked.connect(self.reject)
+        confirm = QPushButton("FINISH", objectName="finishPrimary")
+        confirm.clicked.connect(self.accept)
+        for button in (cancel, confirm):
+            button.setFocusPolicy(Qt.NoFocus)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.setStyleSheet(
+            f"""
+            #finishDialog {{ background:white;border:2px solid {PURPLE};border-radius:14px; }}
+            #finishTitle {{ font-size:20px;font-weight:800; }}
+            #finishCaption {{ font-size:12px;font-weight:800;color:#525252; }}
+            #finishFigure {{ font-size:30px;font-weight:900; }}
+            #finishNote {{ color:#b45309;font-size:13px; }}
+            QLabel {{ font-size:15px; }}
+            QLineEdit,QSpinBox {{ background:white;border:1px solid #bdbdbd;border-radius:7px;
+                                 padding:9px;font-size:16px;min-height:26px; }}
+            QSpinBox::up-button,QSpinBox::down-button {{ width:34px; }}
+            QCheckBox {{ font-size:15px;spacing:10px; }}
+            QCheckBox::indicator {{ width:26px;height:26px; }}
+            QPushButton {{ min-height:52px;min-width:150px;border:0;border-radius:10px;font-size:16px;font-weight:800; }}
+            #finishPrimary {{ background:{PURPLE};color:white; }}
+            #finishSecondary {{ background:#e5e5e5;color:#171717; }}
+            """
+        )
+        self.refresh_options()
+
+    @property
+    def completes_lot(self) -> bool:
+        return self.yield_qty + self.reject_qty.value() >= self.remaining
+
+    def refresh_options(self) -> None:
+        # Peti yang qty-nya terpenuhi selalu keluar dari antrean; pilihan
+        # menahan peti hanya berlaku bila masih ada sisa.
+        if self.completes_lot:
+            self.remove_lot.setChecked(True)
+            self.remove_lot.setEnabled(False)
+            self.lot_note.setText("Qty lot terpenuhi: peti otomatis keluar dari antrean.")
+        else:
+            self.remove_lot.setEnabled(True)
+            left = self.remaining - self.yield_qty - self.reject_qty.value()
+            self.lot_note.setText(
+                f"Sisa {number(left)} belum terproses. Hilangkan centang untuk menahan peti "
+                "di antrean dan melanjutkannya nanti."
+            )
+
+    @property
+    def keep_in_queue(self) -> bool:
+        return not self.completes_lot and not self.remove_lot.isChecked()
 
 
 class CounterCard(QFrame):
@@ -150,7 +256,11 @@ class MachinePage(QWidget):
         self.machine = machine
         self.host = host
         self.queue: list[dict[str, Any]] = []
-        self.operators: list[dict[str, str]] = []
+        # Operator terinput dipulihkan dari SQLite: setelah listrik padam
+        # operator tidak perlu memindai ulang NPP-nya.
+        self.operators: list[dict[str, str]] = list(
+            host.store.get_state(f"operators:{machine.code}", []) or []
+        )
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 12, 0, 0)
@@ -239,6 +349,7 @@ class MachinePage(QWidget):
             counter_grid.addWidget(card, 1, index)
         right_layout.addLayout(counter_grid, 1)
         outer.addWidget(right, 6)
+        self.render_operators()
 
     @staticmethod
     def table(headers: list[str]) -> QTableWidget:
@@ -265,6 +376,13 @@ class MachinePage(QWidget):
             self.host.handle_api_error(exc)
 
     def render_queue(self, selected_id: str | None = None) -> None:
+        running = next((row for row in self.queue if row["status"] == "RUNNING"), None)
+        team = ((running or {}).get("confirmation") or {}).get("operators") or []
+        if running and team and not self.operators:
+            # Tim sesi berjalan tercatat di backend; dipakai bila state lokal
+            # kosong (mis. panel dipasang ulang di Raspberry Pi lain).
+            self.operators = [{"npp": item["npp"], "name": item["name"]} for item in team]
+            self.render_operators()
         self.queue_table.setRowCount(len(self.queue))
         select_row = 0
         for row_index, row in enumerate(self.queue):
@@ -272,10 +390,14 @@ class MachinePage(QWidget):
             status = "DIKERJAKAN" if row["status"] == "RUNNING" else "DIANTRIKAN"
             self.queue_table.setItem(row_index, 0, QTableWidgetItem(lot["petiId"]))
             self.queue_table.setItem(row_index, 1, QTableWidgetItem(status))
-            button = QPushButton("STOP" if row["status"] == "RUNNING" else "DEL")
-            button.setObjectName("tableAction")
-            button.clicked.connect(lambda _checked, i=row_index: self.queue_action(i))
-            self.queue_table.setCellWidget(row_index, 2, button)
+            if row["status"] == "RUNNING":
+                actions = [(stop_icon(), "Finish / stop", lambda _c=False, i=row_index: self.finish_row(i))]
+            else:
+                actions = [
+                    (play_icon(), "Start", lambda _c=False, i=row_index: self.start_row(i)),
+                    (trash_icon(), "Hapus dari antrean", lambda _c=False, i=row_index: self.delete_row(i)),
+                ]
+            self.queue_table.setCellWidget(row_index, 2, self.action_cell(actions))
             if row["id"] == selected_id or row["status"] == "RUNNING":
                 select_row = row_index
         if self.queue:
@@ -297,6 +419,19 @@ class MachinePage(QWidget):
             # Backend memilih tahapan berikutnya menurut routing PD peti itu
             # sendiri, lalu menolak bila urutan routing belum dipenuhi.
             row = self.host.api.add_queue(self.machine.code, peti)
+            owner = str(row.get("machine", {}).get("code") or self.machine.code).upper()
+            if row.get("resumed"):
+                # Peti masih aktif di panel ini (mis. setelah listrik padam):
+                # buka tab mesinnya dan lanjutkan dari state terakhir.
+                page = self.host.focus_queue(owner, str(row["id"]))
+                dal = page.machine.dal if page else owner
+                state = "dikerjakan" if row.get("status") == "RUNNING" else "mengantre"
+                self.host.info(
+                    "Sesi dilanjutkan",
+                    f"Peti {peti} masih {state} di mesin {dal}. Panel kembali ke sesi "
+                    "terakhirnya; counter dan operator dipulihkan.",
+                )
+                return
             self.reload_queue()
             self.select_queue_by_id(str(row["id"]))
         except ApiError as exc:
@@ -318,29 +453,64 @@ class MachinePage(QWidget):
             self.host.handle_api_error(exc, dialog=True)
 
     def render_operators(self) -> None:
+        self.host.store.set_state(f"operators:{self.machine.code}", self.operators)
         self.operator_table.setRowCount(len(self.operators))
         for row, operator in enumerate(self.operators):
             self.operator_table.setItem(row, 0, QTableWidgetItem(operator["npp"]))
             self.operator_table.setItem(row, 1, QTableWidgetItem(operator["name"]))
-            remove = QPushButton("DEL")
-            remove.setObjectName("tableAction")
-            remove.clicked.connect(lambda _checked, i=row: self.remove_operator(i))
-            self.operator_table.setCellWidget(row, 2, remove)
+            self.operator_table.setCellWidget(
+                row,
+                2,
+                self.action_cell(
+                    [(trash_icon(), "Hapus operator", lambda _c=False, i=row: self.remove_operator(i))]
+                ),
+            )
 
     def remove_operator(self, row: int) -> None:
         if 0 <= row < len(self.operators):
             self.operators.pop(row)
             self.render_operators()
 
-    def queue_action(self, index: int) -> None:
+    @staticmethod
+    def action_cell(actions: list[tuple[Any, str, Callable[..., None]]]) -> QWidget:
+        """Tombol ikon di tengah sel (vertikal & horizontal)."""
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignCenter)
+        for icon, tip, handler in actions:
+            button = QPushButton()
+            button.setObjectName("tableAction")
+            button.setIcon(icon)
+            button.setIconSize(QSize(22, 22))
+            button.setFixedSize(38, 32)
+            button.setToolTip(tip)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(handler)
+            layout.addWidget(button)
+        return cell
+
+    def focus_row(self, index: int) -> dict[str, Any] | None:
         if not 0 <= index < len(self.queue):
-            return
+            return None
         self.queue_table.selectRow(index)
         self.select_queue(index)
-        if self.queue[index]["status"] == "RUNNING":
-            self.finish(self.queue[index])
-        else:
-            self.delete_queue(self.queue[index])
+        return self.queue[index]
+
+    def start_row(self, index: int) -> None:
+        if self.focus_row(index) is not None:
+            self.start_or_finish()
+
+    def finish_row(self, index: int) -> None:
+        row = self.focus_row(index)
+        if row is not None:
+            self.finish(row)
+
+    def delete_row(self, index: int) -> None:
+        row = self.focus_row(index)
+        if row is not None:
+            self.delete_queue(row)
 
     def delete_queue(self, row: dict[str, Any]) -> None:
         if not self.host.can_validate_new_work():
@@ -383,21 +553,25 @@ class MachinePage(QWidget):
         yield_qty = sum(
             self.host.store.session_counter(slot.code) for slot in self.machine.slots
         )
-        dialog = FinishDialog(yield_qty, self)
+        lot_qty = int(current.get("lotQty") or current["lotPeti"].get("qty") or 0)
+        processed = int(current.get("processedQty") or 0)
+        dialog = FinishDialog(yield_qty, lot_qty, processed, self)
         if dialog.exec_() != QDialog.Accepted:
             return
         payload = {
             "queue_id": current["id"],
             "event_id": str(uuid.uuid4()),
-            "yield_qty": yield_qty,
+            "yield_qty": dialog.yield_qty,
             "scrap_qty": dialog.reject_qty.value(),
             "reason": dialog.obstacle.text().strip() or None,
+            "keep_in_queue": dialog.keep_in_queue,
         }
+        if dialog.clear_operators.isChecked():
+            self.operators.clear()
+            self.render_operators()
         if self.host.online and self.host.device_authorized:
             try:
                 self.host.api.finish(**payload)
-                self.operators.clear()
-                self.render_operators()
                 self.reload_queue()
                 return
             except ApiError as exc:
@@ -624,7 +798,11 @@ class PanelWindow(QMainWindow):
         antrean dan operator yang sedang dipindai tidak hilang tiap 10 detik."""
         if [page.machine for page in self.pages] == machines:
             return
-        current_code = self.current_page().machine.code if self.current_page() else None
+        current_code = (
+            self.current_page().machine.code
+            if self.current_page()
+            else self.store.get_state("selected_machine")
+        )
         for button in self.tab_buttons:
             self.tabs.removeWidget(button)
             button.deleteLater()
@@ -662,9 +840,20 @@ class PanelWindow(QMainWindow):
         if not 0 <= index < len(self.pages):
             return
         self.stack.setCurrentIndex(index)
+        self.store.set_state("selected_machine", self.pages[index].machine.code)
         self.update_heading()
         self.refresh_tabs()
         self.pages[index].reload_queue()
+
+    def focus_queue(self, machine_code: str, queue_id: str) -> MachinePage | None:
+        index = next(
+            (i for i, page in enumerate(self.pages) if page.machine.code == machine_code), None
+        )
+        if index is None:
+            return None
+        self.select_machine(index)
+        self.pages[index].select_queue_by_id(queue_id)
+        return self.pages[index]
 
     def update_heading(self) -> None:
         page = self.current_page()
@@ -868,6 +1057,9 @@ class PanelWindow(QMainWindow):
             + self.connection_reason
         )
 
+    def info(self, title: str, text: str) -> None:
+        alert(self, title, text, "info")
+
     def warning(self, text: str) -> None:
         alert(self, "Perhatian", text, "warning")
 
@@ -898,7 +1090,8 @@ class PanelWindow(QMainWindow):
         #counterValue {{ font-size:45px;font-weight:900; }}
         #primaryButton {{ background:{PURPLE};color:white;min-height:58px; }}
         #dangerButton {{ background:{IDLE};color:white;min-height:58px; }}
-        #tableAction {{ background:transparent;color:#111;min-height:25px;border-radius:3px; }}
+        #tableAction {{ background:transparent;border:0;min-height:0;padding:0;border-radius:6px; }}
+        #tableAction:pressed {{ background:#e5e5e5; }}
         #closeApp {{ background:{STOP};color:white;font-size:24px; }}
         #keyboardPanel {{ background:#dedede;border-radius:10px; }}
         #keyboardPanel QPushButton {{ background:white;border:1px solid #bdbdbd;min-height:31px;padding:2px 5px; }}

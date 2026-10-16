@@ -93,6 +93,28 @@ class LocalStore:
         baseline = int(row["value"]) if row else self.counter(slot_code)
         return max(0, self.counter(slot_code) - baseline)
 
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """State UI panel (operator terinput, tab terakhir) yang harus selamat
+        dari listrik padam; disimpan JSON di tabel runtime_state."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM runtime_state WHERE key = ?", (f"state:{key}",)
+            ).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row["value"])
+        except ValueError:
+            return default
+
+    def set_state(self, key: str, value: Any) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO runtime_state(key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (f"state:{key}", json.dumps(value)),
+            )
+
     def enqueue(self, event_id: str, kind: str, payload: dict[str, Any]) -> None:
         with self._lock, self._db:
             self._db.execute(

@@ -57,8 +57,22 @@ class ApiClient:
     def start(self, queue_id: str, operators: list[str]) -> dict[str, Any]:
         return self.request("POST", f"/api/production/panel/queue/{queue_id}/start", json={"operatorNpps": operators})
 
-    def finish(self, queue_id: str, event_id: str, yield_qty: int, scrap_qty: int, reason: str | None) -> dict[str, Any]:
-        body: dict[str, Any] = {"eventId": event_id, "yieldQty": yield_qty, "scrapQty": scrap_qty}
+    def finish(
+        self,
+        queue_id: str,
+        event_id: str,
+        yield_qty: int,
+        scrap_qty: int,
+        reason: str | None,
+        keep_in_queue: bool = False,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "eventId": event_id,
+            "yieldQty": yield_qty,
+            "scrapQty": scrap_qty,
+            # Peti yang belum memenuhi qty tetap di antrean mesin ini.
+            "keepInQueue": keep_in_queue,
+        }
         if reason:
             body["reasonReject"] = reason
         return self.request("POST", f"/api/production/panel/queue/{queue_id}/finish", json=body)

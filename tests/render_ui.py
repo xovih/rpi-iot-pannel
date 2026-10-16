@@ -39,6 +39,9 @@ QUEUE_ROW = {
     "step": 2,
     "totalSteps": 8,
     "routingVersion": 2,
+    "lotQty": 1000,
+    "processedQty": 400,
+    "remainingQty": 600,
     "lotPeti": {
         "petiId": "PETI_0002",
         "nomorPd": "1120000890",
@@ -73,7 +76,14 @@ class PreviewApi:
 
     def queue(self, machine_code: str) -> list[dict[str, Any]]:
         self.queue_machine_codes.append(machine_code)
-        return [dict(QUEUE_ROW)] if self.with_queue and machine_code == "PREVIEW_1" else []
+        if not (self.with_queue and machine_code == "PREVIEW_1"):
+            return []
+        queued = {**QUEUE_ROW, "id": "q-2", "status": "QUEUED", "lotPeti": {**QUEUE_ROW["lotPeti"], "petiId": "PETI_0003"}}
+        return [dict(QUEUE_ROW), queued]
+
+    def add_queue(self, machine_code: str, peti_id: str) -> dict[str, Any]:
+        # Peti PETI_0002 masih berjalan di PREVIEW_1 (I.1) walau dipindai di tab lain.
+        return {**QUEUE_ROW, "resumed": True, "machine": {"code": "PREVIEW_1", "dalCode": "I.1"}}
 
     def ingest(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
         self.last_samples = samples
@@ -93,11 +103,25 @@ def main() -> int:
     store = LocalStore(output.with_suffix(".db"), output.with_suffix(".csv"))
     app = QApplication([])
     mode = sys.argv[3] if len(sys.argv) > 3 else ""
-    api = PreviewApi(partial=mode == "partial", queue=mode == "queue")
+    api = PreviewApi(partial=mode == "partial", queue=mode in ("queue", "resume"))
+    if mode == "resume":
+        # State tersimpan sebelum "listrik padam".
+        store.set_state("operators:PREVIEW_1", [{"npp": "05818", "name": "Solihan"}])
+        store.set_state("selected_machine", "PREVIEW_2")
     window = PanelWindow(config, api, store)  # type: ignore[arg-type]
     window.resize(1240, 1000)
     window.bootstrap()
     selected_tab = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    if mode == "resume":
+        assert window.stack.currentIndex() == 1, "tab terakhir harus dipulihkan"
+        assert window.pages[0].operators == [{"npp": "05818", "name": "Solihan"}]
+        messages: list[str] = []
+        window.info = lambda _title, text: messages.append(text)  # type: ignore[method-assign]
+        window.pages[1].peti_scan.setText("PETI_0002")
+        window.pages[1].add_scanned_peti()
+        assert window.stack.currentIndex() == 0 and messages, (window.stack.currentIndex(), messages)
+        assert window.pages[0].current_queue_id() == "q-1"
+        selected_tab = 0
     window.select_machine(selected_tab)
     assert all(len(page.slot_cards) == 2 for page in window.pages)
     window.show()
