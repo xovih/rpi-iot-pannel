@@ -109,8 +109,14 @@ def main() -> int:
     assert page.peti_scan.text() == "P"
     page.peti_scan.clear()
     assert "1115LE01" in page.peti_scan.placeholderText()
+    heights = {button.height() for button in [*window.tab_buttons, window.keyboard_button, window.close_button]}
+    assert len(heights) == 1, heights
+    stack_before = window.stack.geometry()
     if mode == "keyboard":
         window.toggle_keyboard()
+        app.processEvents()
+        # Area antrean/operator tidak boleh menciut saat keyboard tampil.
+        assert window.stack.geometry() == stack_before, (stack_before, window.stack.geometry())
     status_demo = mode == "status-demo"
     if status_demo:
         window.online = True

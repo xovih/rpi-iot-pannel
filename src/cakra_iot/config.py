@@ -153,3 +153,41 @@ def write_config(path: Path, raw: dict[str, Any]) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def template_counters() -> list[dict[str, Any]]:
+    """Pemetaan pin baku dari `config.example.json` di folder aplikasi —
+    pin sensor panel `.14` yang sudah diuji di lapangan."""
+    example = app_dir() / "config.example.json"
+    try:
+        raw = json.loads(example.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return list(raw.get("counters", raw.get("machines", [])) or [])
+
+
+def merge_counters(
+    dals: list[str], existing: list[dict[str, Any]], template: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Satu entri counter per DAL mesin backend. Pin yang sudah diisi teknisi
+    dipertahankan; DAL yang belum berpin diambil dari templat; sisanya
+    dibiarkan kosong agar teknisi tahu mesin mana yang belum dikabel."""
+
+    def by_dal(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {str(item.get("dal", "")).strip().upper(): item for item in entries}
+
+    current, defaults = by_dal(existing), by_dal(template)
+    merged: list[dict[str, Any]] = []
+    used_pins: set[int] = set()
+    for dal in dict.fromkeys(item.strip().upper() for item in dals):
+        source = current.get(dal) if current.get(dal, {}).get("slots") else defaults.get(dal)
+        slots = [
+            {"code": str(slot["code"]).upper(), "pins": [int(pin) for pin in (slot.get("pins") or [slot["pin"]])]}
+            for slot in (source or {}).get("slots", [])
+        ]
+        pins = {pin for slot in slots for pin in slot["pins"]}
+        if pins & used_pins:
+            slots, pins = [], set()  # Hindari pin ganda; teknisi mengisi manual.
+        used_pins |= pins
+        merged.append({"dal": dal, "slots": slots})
+    return merged

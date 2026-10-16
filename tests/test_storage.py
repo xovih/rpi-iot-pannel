@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cakra_iot.config import AppConfig
+from cakra_iot.config import AppConfig, merge_counters
 from cakra_iot.storage import LocalStore
 
 
@@ -80,6 +80,30 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.api_base_url, "http://192.168.196.196:4000")
         self.assertEqual(config.counter_for("I.1").slots[0].pins, (17, 18))  # type: ignore[union-attr]
         self.assertEqual([pin for slot in config.all_slots for pin in slot.pins], [17, 18, 27, 22, 5, 6, 26, 16])
+
+
+class MergeCountersTest(unittest.TestCase):
+    TEMPLATE = [
+        {"dal": "I.1", "slots": [{"code": "I.1", "pins": [17, 18]}]},
+        {"dal": "I.8-1", "slots": [{"code": "I.8-1-SPUR1", "pins": [5]}]},
+    ]
+
+    def test_wizard_config_with_empty_slots_gets_template_pins(self) -> None:
+        existing = [{"dal": "I.1", "slots": []}, {"dal": "I.8-1", "slots": []}]
+        merged = merge_counters(["i.1", "I.8-1", "X.9"], existing, self.TEMPLATE)
+        self.assertEqual(merged[0]["slots"][0]["pins"], [17, 18])
+        self.assertEqual(merged[1]["slots"][0]["code"], "I.8-1-SPUR1")
+        self.assertEqual(merged[2], {"dal": "X.9", "slots": []})
+
+    def test_technician_pins_are_kept(self) -> None:
+        existing = [{"dal": "I.1", "slots": [{"code": "I.1", "pins": [4]}]}]
+        merged = merge_counters(["I.1"], existing, self.TEMPLATE)
+        self.assertEqual(merged[0]["slots"][0]["pins"], [4])
+
+    def test_conflicting_pins_are_left_empty(self) -> None:
+        existing = [{"dal": "A", "slots": [{"code": "A", "pins": [17]}]}]
+        merged = merge_counters(["A", "I.1"], existing, self.TEMPLATE)
+        self.assertEqual(merged[1]["slots"], [])
 
 
 if __name__ == "__main__":

@@ -48,8 +48,29 @@ memasang panel; jalan berikutnya langsung membuka panel.
 
 Bila `config.json` belum ada, panel membuka **wizard pengaturan awal**: isi
 alamat backend, kode gateway, dan device token dari menu Gateway / Panel IoT.
-Wizard memvalidasi token ke backend dan menyiapkan kerangka `counters` untuk
-setiap DAL mesin panel.
+Wizard memvalidasi token ke backend dan mengisi `counters` setiap DAL mesin
+panel dengan pin dari `config.example.json`.
+
+### Membuat / melengkapi config.json tanpa wizard
+
+```bash
+bash generate-config.sh                      # lengkapi config yang ada (mis. hasil wizard)
+bash generate-config.sh --token gw_live_…    # buat config baru
+bash generate-config.sh --force              # timpa pin dengan templat
+```
+
+Daftar mesin dibaca dari backend; pin diambil dari `config.example.json`
+untuk DAL yang dikenal. Pin yang sudah diisi teknisi dipertahankan, dan DAL
+tanpa templat ditandai `BELUM ADA PIN`. Tutup panel (tombol ✕), jalankan
+generator, lalu buka panel lagi.
+
+### Tampilan
+
+- Seluruh tombol baris atas (tab mesin, ⌨ keyboard, ✕ tutup) setinggi sama.
+- Area keyboard di bawah selalu dipesan: membuka keyboard tidak menciutkan
+  tabel antrean/operator sehingga posisi input tidak bergeser.
+- Jendela kiosk tidak punya tombol minimize/close; tutup aplikasi lewat ✕
+  dengan konfirmasi.
 
 ### Satu berkas executable (tanpa Python)
 

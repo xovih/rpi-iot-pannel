@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .api import ApiClient, ApiError
-from .config import write_config
+from .config import merge_counters, template_counters, write_config
 
 
 class SetupDialog(QDialog):
@@ -91,11 +91,13 @@ class SetupDialog(QDialog):
                 return
         else:
             raw["gateway_code"] = raw["gateway_code"] or str(bootstrap.get("code", ""))
-            # Kerangka counter per mesin agar teknisi tinggal mengisi pin GPIO.
-            raw["counters"] = [
-                {"dal": machine["dalCode"], "slots": []}
-                for machine in bootstrap.get("machines", [])
-            ]
+            # Pin per mesin diambil dari templat config.example.json; DAL tanpa
+            # templat dibiarkan kosong untuk diisi teknisi.
+            raw["counters"] = merge_counters(
+                [machine["dalCode"] for machine in bootstrap.get("machines", [])],
+                [],
+                template_counters(),
+            )
         write_config(self.target, raw)
         self.saved = raw
         self.accept()

@@ -40,6 +40,12 @@ PURPLE = "#3212ef"
 RUN = "#4fd13f"
 IDLE = "#ff3b18"
 STOP = "#575252"
+# Tinggi seragam seluruh tombol baris atas (tab mesin, keyboard, tutup).
+TOP_BUTTON_HEIGHT = 64
+# Tinggi area keyboard layar sentuh. Area ini selalu dipesan walau keyboard
+# tersembunyi, sehingga tabel antrean/operator tidak menciut saat keyboard
+# dibuka dan posisi kolom input tidak berpindah ketika operator mengetik.
+KEYBOARD_HEIGHT = 205
 # Mockup hanya memiliki empat status visual. Kondisi koneksi offline tetap
 # dijelaskan pada footer, sedangkan tombol DAL memakai warna STOP.
 OFFLINE = STOP
@@ -158,7 +164,7 @@ class MachinePage(QWidget):
         left_layout.setSpacing(10)
         left_layout.addWidget(QLabel("ANTRIAN PETI", objectName="sectionTitle"))
         self.queue_table = self.table(["NOMOR PETI", "STATUS", "AKSI"])
-        self.queue_table.setMinimumHeight(175)
+        self.queue_table.setMinimumHeight(130)
         self.queue_table.cellClicked.connect(lambda row, _column: self.select_queue(row))
         left_layout.addWidget(self.queue_table)
         self.peti_scan = QLineEdit()
@@ -171,7 +177,7 @@ class MachinePage(QWidget):
 
         left_layout.addWidget(QLabel("OPERATOR", objectName="sectionTitle"))
         self.operator_table = self.table(["NPP", "NAMA", "AKSI"])
-        self.operator_table.setMinimumHeight(135)
+        self.operator_table.setMinimumHeight(105)
         left_layout.addWidget(self.operator_table)
         self.operator_scan = QLineEdit()
         self.operator_scan.setPlaceholderText("Scan NPP operator lalu Enter")
@@ -497,11 +503,20 @@ class PanelWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.keyboard_button = QPushButton("⌨")
         self.keyboard_button.setObjectName("keyboardToggle")
-        self.keyboard_button.setFixedWidth(72)
+        self.keyboard_button.setFixedSize(72, TOP_BUTTON_HEIGHT)
         self.keyboard_button.setFocusPolicy(Qt.NoFocus)
         self.keyboard_button.setProperty("expanded", False)
         self.keyboard_button.clicked.connect(self.toggle_keyboard)
         self.tabs.addWidget(self.keyboard_button)
+        # Jendela kiosk tidak memiliki tombol minimize/close; tombol ini
+        # satu-satunya jalan keluar yang disengaja, selalu dengan konfirmasi.
+        self.close_button = QPushButton("✕")
+        self.close_button.setObjectName("closeApp")
+        self.close_button.setToolTip("Tutup Panel IoT")
+        self.close_button.setFixedSize(72, TOP_BUTTON_HEIGHT)
+        self.close_button.setFocusPolicy(Qt.NoFocus)
+        self.close_button.clicked.connect(self.confirm_close)
+        self.tabs.addWidget(self.close_button)
         layout.addLayout(self.tabs)
 
         header = QFrame(objectName="machineHeader")
@@ -527,22 +542,15 @@ class PanelWindow(QMainWindow):
             header_layout.addWidget(legend)
         layout.addWidget(header)
 
-        layout.addWidget(self.stack, 3)
+        layout.addWidget(self.stack, 1)
         self.stack.hide()
-        self.keyboard_placeholder = QFrame(objectName="keyboardPlaceholder")
-        placeholder_layout = QVBoxLayout(self.keyboard_placeholder)
-        placeholder_layout.addStretch()
-        placeholder_layout.addWidget(
-            QLabel(
-                "KEYBOARD\nTOGGLE SHOW/COLLAPSE DENGAN TOMBOL KEYBOARD PADA POJOK ATAS",
-                alignment=Qt.AlignCenter,
-            )
-        )
-        placeholder_layout.addStretch()
         self.keyboard_panel = OnScreenKeyboard(self.keyboard_target)
+        self.keyboard_panel.setFixedHeight(KEYBOARD_HEIGHT)
+        policy = self.keyboard_panel.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.keyboard_panel.setSizePolicy(policy)
         self.keyboard_panel.hide()
-        layout.addWidget(self.keyboard_placeholder, 1)
-        layout.addWidget(self.keyboard_panel, 1)
+        layout.addWidget(self.keyboard_panel)
         self.status = QLabel("MEMERIKSA BACKEND…")
         self.status.setObjectName("connectionStatus")
         layout.addWidget(self.status)
@@ -628,6 +636,7 @@ class PanelWindow(QMainWindow):
         for index, machine in enumerate(machines):
             button = QPushButton(f"{machine.dal}\n{machine.name}")
             button.setObjectName("machineTab")
+            button.setFixedHeight(TOP_BUTTON_HEIGHT)
             button.setFocusPolicy(Qt.NoFocus)
             button.clicked.connect(lambda _checked, i=index: self.select_machine(i))
             self.tabs.insertWidget(index, button)
@@ -669,7 +678,6 @@ class PanelWindow(QMainWindow):
     def toggle_keyboard(self) -> None:
         show = not self.keyboard_panel.isVisible()
         self.keyboard_panel.setVisible(show)
-        self.keyboard_placeholder.setVisible(not show)
         self.keyboard_button.setProperty("expanded", show)
         self.keyboard_button.style().unpolish(self.keyboard_button)
         self.keyboard_button.style().polish(self.keyboard_button)
@@ -677,6 +685,18 @@ class PanelWindow(QMainWindow):
             target = self.keyboard_target()
             if target is not None:
                 target.setFocus()
+
+    def confirm_close(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Tutup Panel IoT",
+            "Tutup aplikasi Panel IoT CAKRA?\n\nCounter dan Finish yang belum terkirim "
+            "tetap tersimpan dan dikirim saat panel dibuka kembali.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self.close()
 
     def remember_input(self, _old: QWidget | None, current: QWidget | None) -> None:
         if isinstance(current, QLineEdit):
@@ -867,7 +887,7 @@ class PanelWindow(QMainWindow):
         QWidget {{ font-family:Arial;font-size:14px;color:#171717; }}
         QMainWindow {{ background:#f7f7f7; }}
         QPushButton {{ min-height:46px;border:0;border-radius:10px;font-weight:800;padding:5px 10px; }}
-        #machineTab {{ min-height:58px; }}
+        #machineTab {{ padding:4px 8px; }}
         #keyboardToggle {{ background:{PURPLE};color:white;font-size:24px; }}
         #keyboardToggle[expanded="true"] {{ background:#9ca3af;color:white; }}
         #machineHeader {{ background:#dddddd;border-radius:10px;min-height:62px; }}
@@ -881,8 +901,10 @@ class PanelWindow(QMainWindow):
         #primaryButton {{ background:{PURPLE};color:white;min-height:58px; }}
         #dangerButton {{ background:{IDLE};color:white;min-height:58px; }}
         #tableAction {{ background:transparent;color:#111;min-height:25px;border-radius:3px; }}
-        #keyboardPlaceholder {{ background:#eeeeee;border:1px dashed #555;min-height:120px;max-height:225px; }}
-        #keyboardPanel {{ background:#dedede;border-radius:10px;min-height:210px;max-height:245px; }}
+        #closeApp {{ background:{STOP};color:white;font-size:24px; }}
+        #keyboardPanel {{ background:#dedede;border-radius:10px; }}
+        QMessageBox QLabel {{ min-width:420px;font-size:15px; }}
+        QMessageBox QPushButton {{ background:{PURPLE};color:white;min-width:120px;min-height:44px; }}
         #keyboardPanel QPushButton {{ background:white;border:1px solid #bdbdbd;min-height:31px;padding:2px 5px; }}
         #connectionStatus {{ min-height:22px; }}
         QLineEdit,QSpinBox {{ background:white;border:1px solid #bdbdbd;border-radius:7px;padding:9px; }}
