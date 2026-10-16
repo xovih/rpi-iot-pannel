@@ -1,0 +1,4 @@
+# Skrip launcher dijalankan bash di Raspberry Pi; CRLF membuatnya gagal.
+*.sh text eol=lf
+*.desktop text eol=lf
+*.bat text eol=crlf

@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+CONFIG_FILENAME = "config.json"
+
+
+@dataclass(frozen=True)
+class CounterSlot:
+    code: str
+    pins: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class CounterConfig:
+    """Pemetaan pin GPIO untuk satu mesin, dikenali dari kode DAL-nya.
+
+    Daftar mesin, nama, dan work center **tidak** lagi ditulis di Raspberry Pi
+    (revisi 16 Okt 2026): semuanya dibaca dari backend saat bootstrap, sesuai
+    mesin yang dinaungi gateway pada menu Gateway / Panel IoT. Berkas lokal
+    hanya menyimpan hal yang memang fisik — kabel sensor ke pin mana.
+    """
+
+    dal: str
+    slots: tuple[CounterSlot, ...]
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    api_base_url: str
+    device_token: str
+    gateway_code: str
+    gpio_mode: str
+    telemetry_hz: int
+    heartbeat_seconds: int
+    idle_after_seconds: int
+    fullscreen: bool
+    database_path: Path
+    recovery_csv_path: Path
+    counters: tuple[CounterConfig, ...]
+    source: Path | None = None
+
+    def counter_for(self, dal: str) -> CounterConfig | None:
+        key = dal.strip().upper()
+        return next((counter for counter in self.counters if counter.dal == key), None)
+
+    @property
+    def all_slots(self) -> tuple[CounterSlot, ...]:
+        return tuple(slot for counter in self.counters for slot in counter.slots)
+
+    @classmethod
+    def load(cls, path: Path) -> "AppConfig":
+        path = path.resolve()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_dict(raw, base_dir=path.parent, source=path)
+
+    @classmethod
+    def from_dict(
+        cls, raw: dict[str, Any], base_dir: Path, source: Path | None = None
+    ) -> "AppConfig":
+        # `machines` adalah nama lama (≤ 15 Okt 2026); tetap dibaca agar
+        # config.json di lapangan tidak wajib ditulis ulang.
+        entries = raw.get("counters", raw.get("machines", [])) or []
+        counters = tuple(
+            CounterConfig(
+                dal=str(item["dal"]).strip().upper(),
+                slots=tuple(
+                    CounterSlot(
+                        code=str(slot["code"]).strip().upper(),
+                        pins=tuple(int(pin) for pin in (slot.get("pins") or [slot["pin"]])),
+                    )
+                    for slot in item.get("slots", [])
+                ),
+            )
+            for item in entries
+        )
+        dals = [counter.dal for counter in counters]
+        if len(dals) != len(set(dals)):
+            raise ValueError("Satu kode DAL hanya boleh ditulis sekali pada daftar counter.")
+        slots = [slot for counter in counters for slot in counter.slots]
+        if any(not slot.pins for slot in slots):
+            raise ValueError("Setiap logical counter wajib memiliki minimal satu pin GPIO.")
+        codes = [slot.code for slot in slots]
+        if len(codes) != len(set(codes)):
+            raise ValueError("Kode logical counter tidak boleh kembar.")
+        pins = [pin for slot in slots for pin in slot.pins]
+        if len(pins) != len(set(pins)):
+            raise ValueError("Satu pin GPIO tidak boleh dipakai oleh lebih dari satu logical counter.")
+        if not str(raw.get("api_base_url", "")).strip():
+            raise ValueError("api_base_url wajib diisi.")
+        if not str(raw.get("device_token", "")).strip():
+            raise ValueError("device_token wajib diisi.")
+
+        def local(value: str) -> Path:
+            candidate = Path(value)
+            return candidate if candidate.is_absolute() else base_dir / candidate
+
+        return cls(
+            api_base_url=str(raw["api_base_url"]).strip().rstrip("/"),
+            device_token=str(raw["device_token"]).strip(),
+            gateway_code=str(raw.get("gateway_code", "")).strip(),
+            gpio_mode=str(raw.get("gpio_mode", "mock")),
+            telemetry_hz=max(1, int(raw.get("telemetry_hz", 1))),
+            heartbeat_seconds=max(10, int(raw.get("heartbeat_seconds", 30))),
+            idle_after_seconds=max(3, int(raw.get("idle_after_seconds", 15))),
+            fullscreen=bool(raw.get("fullscreen", True)),
+            database_path=local(str(raw.get("database_path", "data/panel.db"))),
+            recovery_csv_path=local(str(raw.get("recovery_csv_path", "data/recovery.csv"))),
+            counters=counters,
+            source=source,
+        )
+
+
+def app_dir() -> Path:
+    """Folder aplikasi: folder executable bila dibekukan PyInstaller, atau
+    akar proyek `cakra-iot-gateway` saat dijalankan dari sumber."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def config_candidates(explicit: Path | None = None) -> list[Path]:
+    """Urutan pencarian config.json — dipakai saat panel dibuka dengan
+    klik-ganda, ketika folder kerja proses tidak dapat diandalkan."""
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(explicit)
+    env = os.environ.get("CAKRA_PANEL_CONFIG")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(app_dir() / CONFIG_FILENAME)
+    candidates.append(Path.home() / ".config" / "cakra-panel" / CONFIG_FILENAME)
+    candidates.append(Path("/etc/cakra/panel.json"))
+    return candidates
+
+
+def find_config(explicit: Path | None = None) -> Path | None:
+    if explicit is not None:
+        return explicit if explicit.exists() else None
+    return next((path for path in config_candidates() if path.exists()), None)
+
+
+def write_config(path: Path, raw: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        # Device token adalah kredensial gateway; hanya pemilik yang membaca.
+        path.chmod(0o600)
+    except OSError:
+        pass

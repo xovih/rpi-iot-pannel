@@ -1,0 +1,20 @@
+[Unit]
+Description=CAKRA IoT Panel
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cakra
+Group=cakra
+WorkingDirectory=/opt/cakra-iot-gateway
+Environment=DISPLAY=:0
+ExecStart=/opt/cakra-iot-gateway/.venv/bin/cakra-panel --config /etc/cakra/panel.json
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=graphical.target

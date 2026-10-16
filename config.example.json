@@ -1,0 +1,19 @@
+{
+  "api_base_url": "http://192.168.196.196:4000",
+  "device_token": "gw_live_GANTI_DENGAN_TOKEN_PANEL",
+  "gateway_code": "RPI-INT-01-TEST",
+  "gpio_mode": "mock",
+  "telemetry_hz": 1,
+  "heartbeat_seconds": 30,
+  "idle_after_seconds": 15,
+  "fullscreen": true,
+  "database_path": "data/panel.db",
+  "recovery_csv_path": "data/recovery.csv",
+  "counters": [
+    {"dal": "I.1", "slots": [{"code": "I.1", "pins": [17, 18]}]},
+    {"dal": "I.9-1", "slots": [{"code": "I.9-1", "pins": [27]}]},
+    {"dal": "I.9-2", "slots": [{"code": "I.9-2", "pins": [22]}]},
+    {"dal": "I.8-1", "slots": [{"code": "I.8-1-SPUR1", "pins": [5]}, {"code": "I.8-1-SPUR2", "pins": [6]}]},
+    {"dal": "I.8-2", "slots": [{"code": "I.8-2-SPUR1", "pins": [26]}, {"code": "I.8-2-SPUR2", "pins": [16]}]}
+  ]
+}

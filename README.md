@@ -1,0 +1,127 @@
+# CAKRA IoT Gateway
+
+Panel kiosk Python untuk Raspberry Pi 4. Satu panel menaungi beberapa mesin;
+**tab mesin dibentuk dari backend** sesuai mesin yang dipilih pada menu
+**Master Data & IoT → Gateway / Panel IoT**. Berkas lokal hanya menyimpan hal
+yang memang fisik: alamat backend, device token, dan pin sensor counter.
+
+## Alur pemetaan (revisi 16 Okt 2026)
+
+```
+Mesin ──(Mesin & Pemeliharaan / Work Center)──► Work Center
+  │                                                  ▲
+  │                                    Routing PD (Get From ERP, berversi)
+  ▼
+Gateway / Panel IoT ──(Mapping Operator)──► Operator
+```
+
+1. **Mesin & Pemeliharaan / Work Center** — satu work center dapat dikerjakan
+   di beberapa mesin, dan satu mesin boleh melayani beberapa work center.
+2. **Routing Table** — routing material **berversi**. Saat Get From ERP,
+   susunan tahapan PD dibandingkan dengan seluruh versi material; susunan baru
+   dicatat sebagai versi 2, 3, dst. Setiap PD tetap memiliki routing sendiri.
+3. **Gateway / Panel IoT** — pilih mesin yang dinaungi panel. Tab panel
+   mengikuti daftar ini.
+4. **Mapping Operator** — beri akses operator ke panel. NPP yang dipindai
+   ditolak bila belum berwenang pada panel tersebut.
+
+Saat peti dipindai pada tab mesin, backend memilih **tahapan berikutnya menurut
+routing PD peti itu**: tahapan yang work center-nya dilayani mesin dan belum
+selesai. Tahapan produksi sebelumnya (selain stasiun QC) wajib sudah
+dikonfirmasi untuk peti yang sama. Kolom **PROSES** menampilkan
+`0020 REGANG (2/8) · 1115LE01 · routing v2`.
+
+## Menjalankan dengan klik-ganda (Raspberry Pi)
+
+Sekali saja di Pi:
+
+```bash
+sudo apt install -y python3-pyqt5 python3-venv
+cd ~/cakra-iot-gateway
+bash install-shortcut.sh            # ikon "CAKRA Panel IoT" di Desktop + menu
+bash install-shortcut.sh --autostart  # opsional: buka otomatis setelah login
+```
+
+Setelah itu panel dibuka dengan **klik-ganda ikon CAKRA Panel IoT** di Desktop.
+Jalan pertama `run-panel.sh` membuat `.venv` (memakai PyQt5 dari paket OS) dan
+memasang panel; jalan berikutnya langsung membuka panel.
+
+Bila `config.json` belum ada, panel membuka **wizard pengaturan awal**: isi
+alamat backend, kode gateway, dan device token dari menu Gateway / Panel IoT.
+Wizard memvalidasi token ke backend dan menyiapkan kerangka `counters` untuk
+setiap DAL mesin panel.
+
+### Satu berkas executable (tanpa Python)
+
+```bash
+bash build-executable.sh   # menghasilkan dist/cakra-panel (PyInstaller)
+bash install-shortcut.sh   # ikon kini menunjuk ke dist/cakra-panel
+```
+
+`config.json` dan folder `data/` diletakkan di samping binary. Binary harus
+dibangun di Pi itu sendiri karena arsitekturnya mengikuti mesin pembangun.
+
+### Windows (pengujian)
+
+Klik-ganda `run-panel.bat`. Gunakan `"gpio_mode": "mock"`.
+
+## Konfigurasi (`config.json`)
+
+```json
+{
+  "api_base_url": "http://192.168.196.196:4000",
+  "device_token": "gw_live_…",
+  "gateway_code": "RPI-INT-01-TEST",
+  "gpio_mode": "real",
+  "fullscreen": true,
+  "counters": [
+    {"dal": "I.1", "slots": [{"code": "I.1", "pins": [17, 18]}]},
+    {"dal": "I.8-1", "slots": [{"code": "I.8-1-SPUR1", "pins": [5]}, {"code": "I.8-1-SPUR2", "pins": [6]}]}
+  ]
+}
+```
+
+- `counters` dicocokkan ke mesin backend lewat **kode DAL**. Mesin backend
+  tanpa entri counter tetap tampil; kartu Spur-nya bernilai `—`.
+- Jumlah mesin dan counter **tidak lagi dibatasi** lima mesin/tujuh counter.
+- Kunci lama `machines` masih dibaca; `code`/`name` di dalamnya diabaikan —
+  kode dan nama mesin selalu dari backend.
+- Lokasi config dicari berurutan: `--config`, variabel `CAKRA_PANEL_CONFIG`,
+  folder aplikasi, `~/.config/cakra-panel/config.json`, `/etc/cakra/panel.json`.
+  Path `data/…` relatif terhadap folder config.
+- Token adalah kredensial gateway: simpan dengan permission `0600`, jangan
+  dimasukkan Git.
+
+## Fungsi komponen
+
+- **PyQt5 kiosk**: UI native fullscreen yang tetap menghitung saat LAN putus
+  dan menerima scanner USB-HID sebagai keyboard wedge.
+- **GPIO real/mock**: `real` membaca pin BCM dengan interrupt falling-edge;
+  `mock` menjalankan panel di PC tanpa Raspberry Pi.
+- **SQLite outbox**: counter dan Finish tertunda tersimpan transaksional.
+  Sampel outbox untuk mesin yang tidak lagi dinaungi panel dibuang.
+- **CSV recovery**: salinan append-only untuk teknisi.
+- **`X-Device-Token`**: identitas gateway tanpa kredensial database.
+- **Telemetry 1 Hz idempoten**: UUID per sampel. Backend menyisihkan sampel
+  mesin yang tidak dikenal (dilaporkan `unknownMachines`) tanpa menolak
+  seluruh kiriman; panel lalu memuat ulang daftar mesin.
+- **Satu instans**: kunci OS pada `data/panel.lock` mencegah dua proses
+  berebut GPIO; kunci lepas otomatis bila listrik padam.
+- **Log**: `data/panel.log` (aplikasi) dan `data/launcher.log` (skrip).
+
+## Development
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e .[dev]
+.venv/bin/python -m cakra_iot --config config.json --windowed
+PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
+PYTHONPATH=src python tests/render_ui.py .test-tmp/panel.png 0 queue
+```
+
+Mode render: `keyboard`, `status-demo`, `partial`, `queue`.
+
+## Layanan systemd (opsional)
+
+`deploy/cakra-iot-panel.service` tetap tersedia bagi Pi yang menjalankan panel
+sebagai layanan, alih-alih ikon Desktop. Jangan memakai keduanya bersamaan;
+kunci satu-instans akan menolak proses kedua.

@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from PyQt5.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+)
+
+from .api import ApiClient, ApiError
+from .config import write_config
+
+
+class SetupDialog(QDialog):
+    """Wizard pertama kali: dibuka bila panel dijalankan (klik-ganda) tanpa
+    config.json. Teknisi cukup mengisi alamat backend, kode gateway, dan device
+    token dari menu Gateway / Panel IoT; mesin dibaca dari backend."""
+
+    def __init__(self, target: Path, defaults: dict[str, Any] | None = None) -> None:
+        super().__init__()
+        defaults = defaults or {}
+        self.target = target
+        self.saved: dict[str, Any] | None = None
+        self.setWindowTitle("CAKRA · Pengaturan Awal Panel IoT")
+        self.setMinimumWidth(560)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Panel belum memiliki config.json. Isi data gateway dari menu "
+            "<b>Gateway / Panel IoT</b> di web CAKRA. Daftar mesin dibaca otomatis "
+            "dari backend; pin sensor counter dapat ditambahkan kemudian pada "
+            f"<code>{target}</code>."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        self.api_url = QLineEdit(defaults.get("api_base_url", "http://192.168.196.196:4000"))
+        self.gateway_code = QLineEdit(defaults.get("gateway_code", ""))
+        self.gateway_code.setPlaceholderText("mis. RPI-INT-01-TEST")
+        self.device_token = QLineEdit(defaults.get("device_token", ""))
+        self.device_token.setPlaceholderText("gw_live_…")
+        self.device_token.setEchoMode(QLineEdit.Password)
+        self.gpio_mode = QComboBox()
+        self.gpio_mode.addItems(["real", "mock"])
+        self.gpio_mode.setCurrentText(defaults.get("gpio_mode", "real"))
+        form.addRow("Alamat backend", self.api_url)
+        form.addRow("Kode gateway", self.gateway_code)
+        form.addRow("Device token", self.device_token)
+        form.addRow("Mode GPIO", self.gpio_mode)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def save(self) -> None:
+        raw: dict[str, Any] = {
+            "api_base_url": self.api_url.text().strip().rstrip("/"),
+            "device_token": self.device_token.text().strip(),
+            "gateway_code": self.gateway_code.text().strip().upper(),
+            "gpio_mode": self.gpio_mode.currentText(),
+            "telemetry_hz": 1,
+            "heartbeat_seconds": 30,
+            "idle_after_seconds": 15,
+            "fullscreen": True,
+            "database_path": "data/panel.db",
+            "recovery_csv_path": "data/recovery.csv",
+            "counters": [],
+        }
+        if not raw["api_base_url"] or not raw["device_token"]:
+            QMessageBox.warning(self, "Belum lengkap", "Alamat backend dan device token wajib diisi.")
+            return
+        try:
+            bootstrap = ApiClient(raw["api_base_url"], raw["device_token"]).bootstrap()
+        except ApiError as exc:
+            answer = QMessageBox.question(
+                self,
+                "Backend belum memvalidasi",
+                f"{exc}\n\nTetap simpan pengaturan ini?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        else:
+            raw["gateway_code"] = raw["gateway_code"] or str(bootstrap.get("code", ""))
+            # Kerangka counter per mesin agar teknisi tinggal mengisi pin GPIO.
+            raw["counters"] = [
+                {"dal": machine["dalCode"], "slots": []}
+                for machine in bootstrap.get("machines", [])
+            ]
+        write_config(self.target, raw)
+        self.saved = raw
+        self.accept()

@@ -1,0 +1,25 @@
+[project]
+name = "cakra-iot-gateway"
+version = "0.2.0"
+description = "Panel kiosk IoT CAKRA untuk Raspberry Pi 4"
+requires-python = ">=3.11"
+dependencies = [
+  "PyQt5>=5.15,<6",
+  "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+raspberry-pi = ["RPi.GPIO>=0.7.1"]
+dev = ["pytest>=8,<9"]
+# Membekukan panel menjadi satu executable (build-executable.sh).
+build = ["pyinstaller>=6,<7"]
+
+[project.scripts]
+cakra-panel = "cakra_iot.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
