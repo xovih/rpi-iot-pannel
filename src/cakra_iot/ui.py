@@ -21,7 +21,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -33,6 +32,7 @@ from PyQt5.QtWidgets import (
 
 from .api import ApiClient, ApiError
 from .config import AppConfig, CounterSlot
+from .dialogs import alert, confirm
 from .gpio import GpioManager
 from .storage import LocalStore
 
@@ -687,15 +687,13 @@ class PanelWindow(QMainWindow):
                 target.setFocus()
 
     def confirm_close(self) -> None:
-        answer = QMessageBox.question(
+        if confirm(
             self,
             "Tutup Panel IoT",
-            "Tutup aplikasi Panel IoT CAKRA?\n\nCounter dan Finish yang belum terkirim "
+            "Tutup aplikasi Panel IoT CAKRA? Counter dan Finish yang belum terkirim "
             "tetap tersimpan dan dikirim saat panel dibuka kembali.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer == QMessageBox.Yes:
+            yes="TUTUP",
+        ):
             self.close()
 
     def remember_input(self, _old: QWidget | None, current: QWidget | None) -> None:
@@ -871,10 +869,10 @@ class PanelWindow(QMainWindow):
         )
 
     def warning(self, text: str) -> None:
-        QMessageBox.warning(self, "Perhatian", text)
+        alert(self, "Perhatian", text, "warning")
 
     def error(self, text: str) -> None:
-        QMessageBox.critical(self, "Gagal", text)
+        alert(self, "Gagal", text, "error")
 
     def closeEvent(self, event: Any) -> None:
         self.gpio.close()
@@ -903,8 +901,6 @@ class PanelWindow(QMainWindow):
         #tableAction {{ background:transparent;color:#111;min-height:25px;border-radius:3px; }}
         #closeApp {{ background:{STOP};color:white;font-size:24px; }}
         #keyboardPanel {{ background:#dedede;border-radius:10px; }}
-        QMessageBox QLabel {{ min-width:420px;font-size:15px; }}
-        QMessageBox QPushButton {{ background:{PURPLE};color:white;min-width:120px;min-height:44px; }}
         #keyboardPanel QPushButton {{ background:white;border:1px solid #bdbdbd;min-height:31px;padding:2px 5px; }}
         #connectionStatus {{ min-height:22px; }}
         QLineEdit,QSpinBox {{ background:white;border:1px solid #bdbdbd;border-radius:7px;padding:9px; }}

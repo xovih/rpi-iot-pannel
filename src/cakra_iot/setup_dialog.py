@@ -10,11 +10,11 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QVBoxLayout,
 )
 
 from .api import ApiClient, ApiError
+from .dialogs import alert, confirm
 from .config import merge_counters, template_counters, write_config
 
 
@@ -77,17 +77,17 @@ class SetupDialog(QDialog):
             "counters": [],
         }
         if not raw["api_base_url"] or not raw["device_token"]:
-            QMessageBox.warning(self, "Belum lengkap", "Alamat backend dan device token wajib diisi.")
+            alert(self, "Belum lengkap", "Alamat backend dan device token wajib diisi.", "warning")
             return
         try:
             bootstrap = ApiClient(raw["api_base_url"], raw["device_token"]).bootstrap()
         except ApiError as exc:
-            answer = QMessageBox.question(
+            if not confirm(
                 self,
                 "Backend belum memvalidasi",
-                f"{exc}\n\nTetap simpan pengaturan ini?",
-            )
-            if answer != QMessageBox.Yes:
+                f"{exc} Tetap simpan pengaturan ini?",
+                yes="SIMPAN",
+            ):
                 return
         else:
             raw["gateway_code"] = raw["gateway_code"] or str(bootstrap.get("code", ""))

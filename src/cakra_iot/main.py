@@ -9,9 +9,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import IO
 
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from .api import ApiClient
+from .dialogs import alert
 from .config import CONFIG_FILENAME, AppConfig, app_dir, find_config
 from .storage import LocalStore
 
@@ -52,7 +53,7 @@ def single_instance(path: Path) -> IO[str] | None:
 
 def fatal(message: str) -> int:
     log.error(message)
-    QMessageBox.critical(None, "CAKRA · Panel IoT", message)
+    alert(None, "CAKRA · Panel IoT", message)
     return 1
 
 
