@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import subprocess
 import sys
 import traceback
 from logging.handlers import RotatingFileHandler
@@ -33,6 +35,22 @@ def fatal(message: str) -> int:
     log.error(message)
     alert(None, "CAKRA · Panel IoT", message)
     return 1
+
+
+def restart() -> None:
+    """Mulai ulang panel setelah PENGATURAN disimpan. Kunci single-instance
+    sudah dilepas pemanggil sehingga proses baru dapat mengambilnya."""
+    args = [arg for arg in sys.argv[1:] if arg != "--setup"]
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, *args]
+    else:
+        command = [sys.executable, "-m", "cakra_iot", *args]
+    log.info("Panel dimulai ulang setelah pengaturan diubah: %s", command)
+    logging.shutdown()
+    if os.name == "nt":
+        subprocess.Popen(command)
+        return
+    os.execv(command[0], command)
 
 
 def main() -> int:
@@ -93,6 +111,8 @@ def main() -> int:
         window.showFullScreen()
     code = application.exec_()
     lock.close()
+    if window.restart_requested:
+        restart()
     return code
 
 

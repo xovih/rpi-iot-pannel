@@ -3,7 +3,9 @@
     python tests/render_ui.py [output.png] [tab] [mode]
 
 Mode: `keyboard`, `status-demo`, `partial` (backend hanya menaungi I.1),
-`queue` (antrean berisi peti dengan langkah routing PD).
+`queue` (antrean berisi peti dengan langkah routing PD), `settings` (tombol
+PENGATURAN, dialog password, dan dialog pengaturan), `recover` (listrik padam
+saat sesi berjalan → panel dibuka tanpa backend, counter dipulihkan & dijeda).
 """
 
 from __future__ import annotations
@@ -108,6 +110,126 @@ class PreviewApi:
         return None
 
 
+class OfflineApi(PreviewApi):
+    def bootstrap(self) -> dict[str, Any]:
+        from cakra_iot.api import ApiError
+
+        raise ApiError(None, "Backend tidak dapat dijangkau (simulasi).")
+
+
+def run_recover(app: QApplication, config: AppConfig, output: Path) -> int:
+    """Sesi berjalan, 37 pulsa, lalu proses mati tanpa closeEvent."""
+    import cakra_iot.ui as ui_module
+    from cakra_iot.dialogs import PanelDialog
+
+    database, csv_path = output.with_suffix(".db"), output.with_suffix(".csv")
+    store = LocalStore(database, csv_path)
+    first = PanelWindow(config, PreviewApi(queue=True), store)  # type: ignore[arg-type]
+    first.bootstrap()
+    assert not first.unexpected_exit
+    page = first.pages[0]
+    assert page.running_row() and page.action.text() == "FINISH"
+    for _ in range(37):
+        first.on_pulse("I.1-SPUR1")
+    assert page.current_output() == 37
+    # "Listrik padam": tidak ada closeEvent, penanda app_running tetap 1.
+    # Jendela dihancurkan tanpa closeEvent agar timer/slot tertunda ikut mati.
+    from PyQt5 import sip
+
+    first.gpio.close()
+    sip.delete(first)
+    store.close()
+
+    notices: list[str] = []
+    ui_module.alert = lambda _parent, _title, text, _tone="error": notices.append(text)  # type: ignore[assignment]
+    store = LocalStore(database, csv_path)
+    second = PanelWindow(config, OfflineApi(queue=True), store)  # type: ignore[arg-type]
+    second.resize(1240, 1000)
+    second.show()
+    app.processEvents()
+    assert second.unexpected_exit
+    assert not second.online
+    assert [p.machine.dal for p in second.pages][:1] == ["I.1"], "tab dari cache bootstrap"
+    page = second.pages[0]
+    assert page.recovered and page.running_row()["lotPeti"]["petiId"] == "PETI_0002"
+    page.refresh_counters()
+    assert page.current_card.value.text() == "37", page.current_card.value.text()
+    assert page.total_card.value.text() == "437", page.total_card.value.text()
+    assert page.action.text() == "START" and page.recovery_banner.isVisible()
+    second.on_pulse("I.1-SPUR1")  # dijeda: tidak dihitung
+    assert page.current_output() == 37
+    message = second.recovery_message() or ""
+    assert "exit yang tak terduga" in message and "PETI_0002" in message and "37" in message, message
+    second.grab().save(str(output))
+    notice = PanelDialog(second, "Data dipulihkan", message, "warning")
+    notice.show()
+    app.processEvents()
+    notice.grab().save(str(output.with_name(output.stem + "-notice.png")))
+    notice.close()
+
+    page.start_or_finish()  # START: counter berjalan lagi dari 37
+    assert not page.recovered and page.action.text() == "FINISH"
+    assert not page.recovery_banner.isVisible()
+    second.on_pulse("I.1-SPUR1")
+    assert page.current_output() == 38
+    second.close()
+    # Ditutup normal: pembukaan berikutnya bukan exit tak terduga.
+    store = LocalStore(database, csv_path)
+    assert not store.begin_run()
+    store.close()
+    app.quit()
+    return 0
+
+
+def check_settings(window: PanelWindow, config: AppConfig, output: Path) -> None:
+    """Tombol PENGATURAN di kanan bawah → password → dialog pengaturan."""
+    import dataclasses
+    import json
+    import shutil
+
+    from cakra_iot.panel_password import Gatekeeper, verify_password
+    from cakra_iot.settings_dialog import PasswordDialog, SettingsDialog
+
+    button = window.settings_button.geometry()
+    status = window.status.geometry()
+    assert button.left() > status.left() and button.top() >= status.top() - 10, (button, status)
+    assert window.width() - button.right() < 40, (window.width(), button)
+
+    gate = Gatekeeper()
+    login = PasswordDialog(window, config, gate)
+    login.show()
+    login.password.setFocus()
+    for key in "gw_live":
+        login.findChild(type(window.keyboard_panel)).insert(key)
+    assert login.password.text() == "gw_live", login.password.text()
+    login.grab().save(str(output.with_name(output.stem + "-password.png")))
+    login.password.setText("salah")
+    login.submit()
+    assert login.result() == 0 and login.error_label.text() == "Password salah."
+    login.password.setText(config.device_token)
+    login.submit()
+    assert login.result() == 1
+
+    target = output.with_name(output.stem + "-config.json")
+    shutil.copy(Path(__file__).parents[1] / "config.example.json", target)
+    dialog = SettingsDialog(window, dataclasses.replace(config, source=target))
+    dialog.bootstrap = lambda: {"code": "RPI-INT-01-TEST", "machines": []}  # type: ignore[method-assign]
+    dialog.show()
+    dialog.grab().save(str(output.with_name(output.stem + "-settings.png")))
+    dialog.api_url.setText("http://10.1.1.1:4000/")
+    dialog.save()
+    assert not dialog.result() and "Password" in dialog.error_label.text(), dialog.error_label.text()
+    dialog.new_password.setText("rahasia1")
+    dialog.repeat_password.setText("rahasia1")
+    dialog.save()
+    assert dialog.result() == 1, dialog.error_label.text()
+    saved = json.loads(target.read_text(encoding="utf-8"))
+    assert saved["api_base_url"] == "http://10.1.1.1:4000"
+    assert saved["device_token"] == config.device_token
+    assert verify_password(saved["settings_password_hash"], "rahasia1")
+    assert saved["counters"], "pin cadangan tidak boleh hilang"
+
+
 def main() -> int:
     root = Path(__file__).parents[1]
     output = Path(sys.argv[1]) if len(sys.argv) > 1 else root / ".test-tmp" / "panel-ui.png"
@@ -118,6 +240,9 @@ def main() -> int:
     store = LocalStore(output.with_suffix(".db"), output.with_suffix(".csv"))
     app = QApplication([])
     mode = sys.argv[3] if len(sys.argv) > 3 else ""
+    if mode == "recover":
+        store.close()
+        return run_recover(app, config, output)
     api = PreviewApi(partial=mode == "partial", queue=mode in ("queue", "resume"))
     if mode == "resume":
         # State tersimpan sebelum "listrik padam".
@@ -212,6 +337,8 @@ def main() -> int:
             spur2_only = next(page for page in window.pages if page.machine.dal == "I.8-2")
             assert [slot is None for slot in spur2_only.spur_slots()] == [True, False]
         window.grab().save(str(output))
+        if mode == "settings":
+            check_settings(window, config, output)
         window.close()
         app.quit()
 

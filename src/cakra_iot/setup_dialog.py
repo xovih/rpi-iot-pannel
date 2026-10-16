@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from .api import ApiClient, ApiError
 from .dialogs import alert, confirm
 from .config import merge_counters, template_counters, write_config
+from .panel_password import MIN_LENGTH, check_new_password, hash_password
 
 
 class SetupDialog(QDialog):
@@ -54,7 +55,11 @@ class SetupDialog(QDialog):
         form.addRow("Alamat backend", self.api_url)
         form.addRow("Kode gateway", self.gateway_code)
         form.addRow("Device token", self.device_token)
+        self.settings_password = QLineEdit()
+        self.settings_password.setEchoMode(QLineEdit.Password)
+        self.settings_password.setPlaceholderText(f"min. {MIN_LENGTH} karakter; boleh dibuat nanti")
         form.addRow("Mode GPIO", self.gpio_mode)
+        form.addRow("Password pengaturan", self.settings_password)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -79,6 +84,13 @@ class SetupDialog(QDialog):
         if not raw["api_base_url"] or not raw["device_token"]:
             alert(self, "Belum lengkap", "Alamat backend dan device token wajib diisi.", "warning")
             return
+        password = self.settings_password.text()
+        if password:
+            problem = check_new_password(password, password)
+            if problem:
+                alert(self, "Password pengaturan", problem, "warning")
+                return
+            raw["settings_password_hash"] = hash_password(password)
         try:
             bootstrap = ApiClient(raw["api_base_url"], raw["device_token"]).bootstrap()
         except ApiError as exc:

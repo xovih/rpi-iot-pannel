@@ -34,6 +34,8 @@ from .api import ApiClient, ApiError
 from .config import AppConfig, CounterSlot
 from .dialogs import alert, confirm
 from .icons import play_icon, stop_icon, trash_icon
+from .keyboard import OnScreenKeyboard
+from .panel_password import Gatekeeper
 from .gpio import GpioManager
 from .pins import CACHE_KEY, PinPlan, from_bootstrap, from_cache, from_config
 from .storage import LocalStore
@@ -48,6 +50,7 @@ TOP_BUTTON_HEIGHT = 64
 # tersembunyi, sehingga tabel antrean/operator tidak menciut saat keyboard
 # dibuka dan posisi kolom input tidak berpindah ketika operator mengetik.
 KEYBOARD_HEIGHT = 205
+RECOVERY_BANNER = "DATA DIPULIHKAN · counter dijeda. START = lanjut, lalu FINISH = simpan."
 # Mockup hanya memiliki empat status visual. Kondisi koneksi offline tetap
 # dijelaskan pada footer, sedangkan tombol DAL memakai warna STOP.
 OFFLINE = STOP
@@ -211,48 +214,6 @@ class CounterCard(QFrame):
         layout.addWidget(self.value, 1)
 
 
-class OnScreenKeyboard(QFrame):
-    def __init__(self, target_provider: Callable[[], QLineEdit | None]) -> None:
-        super().__init__(objectName="keyboardPanel")
-        self.target_provider = target_provider
-        layout = QGridLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setHorizontalSpacing(7)
-        layout.setVerticalSpacing(6)
-        for row, keys in enumerate(
-            ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM_-."]
-        ):
-            for column, key in enumerate(keys):
-                label = "GARIS _" if key == "_" else key
-                layout.addWidget(self.key(label, key), row, column)
-        layout.addWidget(self.key("BERSIHKAN", "CLEAR"), 4, 0, 1, 2)
-        layout.addWidget(self.key("SPASI", "SPACE"), 4, 2, 1, 4)
-        layout.addWidget(self.key("⌫ HAPUS", "BACKSPACE"), 4, 6, 1, 2)
-        layout.addWidget(self.key("ENTER", "ENTER"), 4, 8, 1, 2)
-
-    def key(self, label: str, value: str) -> QPushButton:
-        button = QPushButton(label)
-        button.setFocusPolicy(Qt.NoFocus)
-        button.clicked.connect(lambda _checked, content=value: self.insert(content))
-        return button
-
-    def insert(self, value: str) -> None:
-        target = self.target_provider()
-        if target is None:
-            return
-        if value == "BACKSPACE":
-            target.backspace()
-        elif value == "CLEAR":
-            target.clear()
-        elif value == "SPACE":
-            target.insert(" ")
-        elif value == "ENTER":
-            target.returnPressed.emit()
-        else:
-            target.insert(value)
-        target.setFocus()
-
-
 class MachinePage(QWidget):
     def __init__(self, machine: PanelMachine, host: "PanelWindow") -> None:
         super().__init__()
@@ -264,6 +225,12 @@ class MachinePage(QWidget):
         self.operators: list[dict[str, str]] = list(
             host.store.get_state(f"operators:{machine.code}", []) or []
         )
+        # Sesi berjalan terakhir tersimpan di SQLite: Monitoring langsung terisi
+        # saat panel dinyalakan ulang, sebelum backend terjangkau.
+        snapshot = host.running_sessions().get(machine.code)
+        self.queue = [snapshot] if snapshot else []
+        # Setelah exit tak terduga counter mesin ini dijeda sampai START.
+        self.recovered = machine.code in host.recovered_machines()
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 12, 0, 0)
@@ -296,6 +263,12 @@ class MachinePage(QWidget):
         self.operator_scan.setPlaceholderText("Scan NPP operator lalu Enter")
         self.operator_scan.returnPressed.connect(self.add_operator)
         left_layout.addWidget(self.operator_scan)
+
+        # Di kolom kiri, tepat di atas START, agar kartu counter tidak menciut.
+        self.recovery_banner = QLabel(RECOVERY_BANNER, objectName="recoveryBanner")
+        self.recovery_banner.setWordWrap(True)
+        self.recovery_banner.hide()
+        left_layout.addWidget(self.recovery_banner)
 
         actions = QHBoxLayout()
         clear = QPushButton("CLEAR ALL", objectName="dangerButton")
@@ -353,6 +326,8 @@ class MachinePage(QWidget):
         right_layout.addLayout(counter_grid, 1)
         outer.addWidget(right, 6)
         self.render_operators()
+        if self.queue:
+            self.render_queue()
 
     @staticmethod
     def table(headers: list[str]) -> QTableWidget:
@@ -380,14 +355,21 @@ class MachinePage(QWidget):
 
     def render_queue(self, selected_id: str | None = None) -> None:
         running = next((row for row in self.queue if row["status"] == "RUNNING"), None)
+        self.host.remember_session(self.machine.code, running)
+        if self.recovered and running is None:
+            # Sesi sudah diakhiri (mis. Finish dari outbox atau web).
+            self.set_recovered(False)
         team = ((running or {}).get("confirmation") or {}).get("operators") or []
         if running and team and not self.operators:
             # Tim sesi berjalan tercatat di backend; dipakai bila state lokal
             # kosong (mis. panel dipasang ulang di Raspberry Pi lain).
             self.operators = [{"npp": item["npp"], "name": item["name"]} for item in team]
             self.render_operators()
-        if running and self.host.store.get_state(f"session:{self.machine.code}") != self.session_token(
-            str(running["id"])
+        if (
+            running
+            and not self.recovered
+            and self.host.store.get_state(f"session:{self.machine.code}")
+            != self.session_token(str(running["id"]))
         ):
             # Sesi berjalan tanpa baseline lokal (START di perangkat/versi lain,
             # atau database panel baru): hitungan sesi dimulai dari sekarang,
@@ -397,10 +379,16 @@ class MachinePage(QWidget):
         select_row = 0
         for row_index, row in enumerate(self.queue):
             lot = row["lotPeti"]
-            status = "DIKERJAKAN" if row["status"] == "RUNNING" else "DIANTRIKAN"
+            status = "DIANTRIKAN"
+            if row["status"] == "RUNNING":
+                status = "DIJEDA" if self.recovered else "DIKERJAKAN"
             self.queue_table.setItem(row_index, 0, QTableWidgetItem(lot["petiId"]))
             self.queue_table.setItem(row_index, 1, QTableWidgetItem(status))
-            if row["status"] == "RUNNING":
+            if row["status"] == "RUNNING" and self.recovered:
+                actions = [
+                    (play_icon(), "Jalankan ulang counter", lambda _c=False, i=row_index: self.start_row(i))
+                ]
+            elif row["status"] == "RUNNING":
                 actions = [(stop_icon(), "Finish / stop", lambda _c=False, i=row_index: self.finish_row(i))]
             else:
                 actions = [
@@ -544,6 +532,12 @@ class MachinePage(QWidget):
             self.host.warning("Pilih peti pada antrean terlebih dahulu.")
             return
         if current["status"] == "RUNNING":
+            if self.recovered:
+                # Sesi pulihan: lanjutkan counter dari nilai tersimpan, tanpa
+                # START baru di backend (sesi di backend masih berjalan).
+                self.set_recovered(False)
+                self.render_queue(str(current["id"]))
+                return
             self.finish(current)
             return
         if not self.host.can_validate_new_work():
@@ -591,6 +585,10 @@ class MachinePage(QWidget):
                     return
                 self.host.handle_api_error(exc)
         self.host.store.enqueue(payload["event_id"], "finish", payload)
+        # Sesi dianggap selesai secara lokal agar tidak di-Finish dua kali bila
+        # panel mati sebelum outbox terkirim.
+        self.queue = [row for row in self.queue if row["id"] != current["id"]]
+        self.render_queue()
         self.host.warning(
             "Jaringan terputus. Finish aman di SQLite outbox dan akan dikirim ulang."
         )
@@ -645,7 +643,14 @@ class MachinePage(QWidget):
 
     def refresh_action(self) -> None:
         row = self.current_queue()
-        self.action.setText("FINISH" if row and row["status"] == "RUNNING" else "START")
+        running = bool(row and row["status"] == "RUNNING")
+        self.action.setText("FINISH" if running and not self.recovered else "START")
+        self.recovery_banner.setVisible(self.recovered and self.running_row() is not None)
+
+    def set_recovered(self, value: bool) -> None:
+        self.recovered = value
+        self.host.set_recovered(self.machine.code, value)
+        self.refresh_action()
 
     def begin_session(self, queue_id: str) -> None:
         """Baseline counter sesi dicatat di SQLite dan diikat ke ID antrean,
@@ -774,7 +779,20 @@ class PanelWindow(QMainWindow):
         layout.addWidget(self.keyboard_panel)
         self.status = QLabel("MEMERIKSA BACKEND…")
         self.status.setObjectName("connectionStatus")
-        layout.addWidget(self.status)
+        footer = QHBoxLayout()
+        footer.setSpacing(12)
+        footer.addWidget(self.status, 1)
+        # Pengaturan teknisi (alamat backend, token, mode GPIO) dilindungi
+        # password; pin GPIO tetap diatur di web.
+        self.settings_button = QPushButton("⚙ PENGATURAN")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setToolTip("Pengaturan panel (teknisi, berpassword)")
+        self.settings_button.setFocusPolicy(Qt.NoFocus)
+        self.settings_button.clicked.connect(self.open_settings)
+        footer.addWidget(self.settings_button)
+        layout.addLayout(footer)
+        self.restart_requested = False
+        self.settings_gate = Gatekeeper()
         self.setCentralWidget(root)
         self.setStyleSheet(self.styles())
         application = QApplication.instance()
@@ -782,6 +800,13 @@ class PanelWindow(QMainWindow):
             application.focusChanged.connect(self.remember_input)
         self.update_heading()
 
+        # Penanda proses berjalan di SQLite: bila masih "berjalan" saat panel
+        # dibuka, proses sebelumnya berhenti tak terduga (listrik padam, kill).
+        self.unexpected_exit = store.begin_run()
+        self.paused_slots: set[str] = set()
+        if self.unexpected_exit:
+            recovered = set(self.recovered_machines()) | set(self.running_sessions())
+            self.store.set_state("recovered", sorted(recovered))
         self.gpio = GpioManager(config.gpio_mode, self.on_pulse)
         self.gpio_error: str | None = None
         # Sebelum backend terjangkau, pin diambil dari salinan pemetaan backend
@@ -789,6 +814,13 @@ class PanelWindow(QMainWindow):
         # menghitung; bila belum pernah ada, dari config.json.
         self.pin_plan: PinPlan = from_cache(store.get_state(CACHE_KEY)) or from_config(config)
         self.install_pins(self.pin_plan)
+        # Tab mesin dari bootstrap terakhir: panel yang dinyalakan tanpa
+        # jaringan tetap menampilkan mesin, sesi, dan counter tersimpan.
+        cached_machines = store.get_state("machines") or []
+        if cached_machines:
+            self.apply_machines([self.panel_machine(row) for row in cached_machines])
+        if self.unexpected_exit:
+            QTimer.singleShot(700, self.show_recovery_notice)
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self.refresh_ui)
         self.ui_timer.start(250)
@@ -822,6 +854,8 @@ class PanelWindow(QMainWindow):
             # Panel yang pinnya belum diisi di backend tetap memakai config.json.
             self.install_pins(backend_plan or from_config(self.config))
             machines = [self.panel_machine(row) for row in bootstrap.get("machines", [])]
+            if bootstrap.get("machines") != self.store.get_state("machines"):
+                self.store.set_state("machines", bootstrap.get("machines", []))
             self.apply_machines(machines)
             if not machines:
                 self.device_authorized = False
@@ -912,6 +946,75 @@ class PanelWindow(QMainWindow):
             self.stack.setCurrentIndex(selected)
         self.update_heading()
         self.refresh_tabs()
+        self.update_paused_slots()
+
+    # ── Pemulihan setelah exit tak terduga ─────────────────────────────────
+
+    def running_sessions(self) -> dict[str, dict[str, Any]]:
+        return dict(self.store.get_state("sessions", {}) or {})
+
+    def remember_session(self, machine_code: str, row: dict[str, Any] | None) -> None:
+        sessions = self.running_sessions()
+        if sessions.get(machine_code) == row:
+            return
+        if row is None:
+            sessions.pop(machine_code, None)
+        else:
+            sessions[machine_code] = row
+        self.store.set_state("sessions", sessions)
+
+    def recovered_machines(self) -> list[str]:
+        return list(self.store.get_state("recovered", []) or [])
+
+    def set_recovered(self, machine_code: str, value: bool) -> None:
+        recovered = set(self.recovered_machines())
+        if value:
+            recovered.add(machine_code)
+        else:
+            recovered.discard(machine_code)
+        self.store.set_state("recovered", sorted(recovered))
+        self.update_paused_slots()
+
+    def update_paused_slots(self) -> None:
+        # Pulsa mesin yang dijeda tidak dihitung sampai operator menekan START.
+        self.paused_slots = {
+            slot.code for page in self.pages if page.recovered for slot in page.machine.slots
+        }
+
+    def recovery_message(self) -> str | None:
+        lines = []
+        for page in self.pages:
+            row = page.running_row()
+            if page.recovered and row:
+                lines.append(
+                    f"• {page.machine.dal} · peti {row['lotPeti']['petiId']} · "
+                    f"HASIL SAAT INI {number(page.current_output())}"
+                )
+        pending = len(self.store.pending(1000))
+        if not lines and not pending:
+            return None
+        text = (
+            "Panel terakhir kali mengalami exit yang tak terduga (mis. listrik padam "
+            "atau ditutup paksa)."
+        )
+        if lines:
+            text += (
+                " Data counter dipulihkan dari penyimpanan lokal:\n"
+                + "\n".join(lines)
+                + "\n\nCounter perlu di-START ulang untuk berjalan kembali. Setelah START, "
+                "Anda bisa menekan FINISH (stop) untuk menyimpan data ke server."
+            )
+        if pending:
+            text += (
+                f"\n\n{pending} data yang belum terkirim tersimpan aman dan dikirim otomatis "
+                "saat backend terhubung."
+            )
+        return text
+
+    def show_recovery_notice(self) -> None:
+        text = self.recovery_message()
+        if text:
+            alert(self, "Data dipulihkan", text, "warning")
 
     def current_page(self) -> MachinePage | None:
         index = self.stack.currentIndex()
@@ -966,6 +1069,18 @@ class PanelWindow(QMainWindow):
         ):
             self.close()
 
+    def open_settings(self) -> None:
+        from .settings_dialog import PasswordDialog, SettingsDialog
+
+        if PasswordDialog(self, self.config, self.settings_gate).exec_() != QDialog.Accepted:
+            return
+        if SettingsDialog(self, self.config).exec_() != QDialog.Accepted:
+            return
+        # Alamat backend & token dipakai seluruh koneksi dan GPIO dipegang
+        # proses ini: cara paling aman menerapkannya adalah mulai ulang.
+        self.restart_requested = True
+        self.close()
+
     def remember_input(self, _old: QWidget | None, current: QWidget | None) -> None:
         if isinstance(current, QLineEdit):
             self.last_input = current
@@ -983,6 +1098,8 @@ class PanelWindow(QMainWindow):
     # ── Counter, status tab, dan telemetry ──────────────────────────────────
 
     def on_pulse(self, slot_code: str) -> None:
+        if slot_code in self.paused_slots:
+            return
         self.store.increment(slot_code)
 
     def refresh_ui(self) -> None:
@@ -991,7 +1108,7 @@ class PanelWindow(QMainWindow):
         self.refresh_tabs()
 
     def machine_state(self, page: MachinePage, now: datetime) -> str:
-        if not any(row["status"] == "RUNNING" for row in page.queue):
+        if page.recovered or not any(row["status"] == "RUNNING" for row in page.queue):
             return "STOP"
         pulses = [self.store.last_pulse(slot.code) for slot in page.machine.slots]
         recent = any(
@@ -1099,7 +1216,7 @@ class PanelWindow(QMainWindow):
             self.device_authorized = False
             reason = (
                 f"Backend {self.config.api_base_url} aktif, tetapi device token ditolak. "
-                "Terbitkan/rotasi token gateway lalu isi config.json."
+                "Terbitkan/rotasi token gateway lalu isi lewat tombol PENGATURAN."
             )
         elif error.status_code is None:
             reason = str(error)
@@ -1156,6 +1273,7 @@ class PanelWindow(QMainWindow):
         alert(self, "Gagal", text, "error")
 
     def closeEvent(self, event: Any) -> None:
+        self.store.end_run()
         self.gpio.close()
         self.store.close()
         super().closeEvent(event)
@@ -1182,9 +1300,13 @@ class PanelWindow(QMainWindow):
         #tableAction {{ background:transparent;border:0;min-height:0;padding:0;border-radius:6px; }}
         #tableAction:pressed {{ background:#e5e5e5; }}
         #closeApp {{ background:{STOP};color:white;font-size:24px; }}
+        #settingsButton {{ background:#e5e5e5;color:#171717;min-height:40px;padding:2px 16px; }}
+        #settingsButton:pressed {{ background:#d4d4d4; }}
         #keyboardPanel {{ background:#dedede;border-radius:10px; }}
         #keyboardPanel QPushButton {{ background:white;border:1px solid #bdbdbd;min-height:31px;padding:2px 5px; }}
         #connectionStatus {{ min-height:22px; }}
+        #recoveryBanner {{ background:#fff4d6;border:2px solid #f59e0b;border-radius:9px;color:#7a4b00;
+                           font-weight:800;font-size:13px;padding:6px 10px; }}
         QLineEdit,QSpinBox {{ background:white;border:1px solid #bdbdbd;border-radius:7px;padding:9px; }}
         QTableWidget {{ background:white;border:1px solid #bbbbbb;border-radius:9px;gridline-color:#c7c7c7;selection-background-color:#e8e5ff;selection-color:#111; }}
         QHeaderView::section {{ background:#eeeeee;border:0;border-right:1px solid #c7c7c7;border-bottom:1px solid #c7c7c7;padding:8px;font-weight:800; }}

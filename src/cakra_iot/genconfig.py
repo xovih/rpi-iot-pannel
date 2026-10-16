@@ -4,6 +4,7 @@
     python -m cakra_iot.genconfig --token gw_live_…     # buat baru
     python -m cakra_iot.genconfig --gpio mock --force   # timpa pin dengan templat
     python -m cakra_iot.genconfig --pin K.1=17 --pin K.2:SPUR1=5 --pin K.2:SPUR2=6
+    python -m cakra_iot.genconfig --settings-password 'rahasia'   # password PENGATURAN
 
 Nilai yang tidak diberikan diambil dari config.json yang sudah ada (mis. hasil
 wizard), lalu dari config.example.json. Daftar mesin dibaca dari backend lewat
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .api import ApiClient, ApiError
+from .panel_password import MIN_LENGTH, check_new_password, hash_password
 from .config import (
     CAUTION_BCM_PINS,
     CONFIG_FILENAME,
@@ -40,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
     "database_path": "data/panel.db",
     "recovery_csv_path": "data/recovery.csv",
     "gpio_pull": "up",
-    "gpio_edge": "falling",
+    "gpio_edge": "rising",
     "gpio_bounce_ms": 110,
 }
 
@@ -94,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Pin BCM counter, mis. --pin K.1=17 atau --pin K.2:SPUR1=5 (boleh berulang)",
     )
     parser.add_argument("--bounce-ms", type=int, help="Debounce GPIO dalam milidetik (baku 110)")
+    parser.add_argument(
+        "--settings-password",
+        help=f"Password tombol PENGATURAN di panel (min. {MIN_LENGTH} karakter); disimpan sebagai hash",
+    )
     args = parser.parse_args(argv)
 
     target = args.config or find_config() or app_dir() / CONFIG_FILENAME
@@ -140,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     raw["counters"] = apply_pins(merge_counters(dals, existing, template), args.pin)
     if args.bounce_ms:
         raw["gpio_bounce_ms"] = args.bounce_ms
+    if args.settings_password is not None:
+        problem = check_new_password(args.settings_password, args.settings_password)
+        if problem:
+            print(f"Gagal: {problem}")
+            return 2
+        raw["settings_password_hash"] = hash_password(args.settings_password)
 
     # Validasi sebelum menulis: config rusak tidak boleh menimpa yang lama.
     AppConfig.from_dict(raw, base_dir=target.parent)
@@ -154,6 +166,11 @@ def main(argv: list[str] | None = None) -> int:
             f"{slot['code']}={'/'.join(str(pin) for pin in slot['pins'])}" for slot in counter["slots"]
         )
         print(f"  {counter['dal']:<8} {pins or 'BELUM ADA PIN — isi dengan --pin'}")
+    if not raw.get("settings_password_hash"):
+        print(
+            "Info: password PENGATURAN belum dibuat; sementara device token dipakai sebagai "
+            "password. Buat dengan --settings-password atau dari tombol PENGATURAN di panel."
+        )
     caution = sorted(
         {
             pin

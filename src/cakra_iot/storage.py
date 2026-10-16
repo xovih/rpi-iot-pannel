@@ -115,6 +115,16 @@ class LocalStore:
                 (f"state:{key}", json.dumps(value)),
             )
 
+    def begin_run(self) -> bool:
+        """Tandai panel sedang berjalan. True bila proses sebelumnya tidak
+        sempat ditutup normal (listrik padam, ditutup paksa, crash)."""
+        previous = bool(self.get_state("app_running", False))
+        self.set_state("app_running", True)
+        return previous
+
+    def end_run(self) -> None:
+        self.set_state("app_running", False)
+
     def enqueue(self, event_id: str, kind: str, payload: dict[str, Any]) -> None:
         with self._lock, self._db:
             self._db.execute(

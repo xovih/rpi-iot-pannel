@@ -8,7 +8,7 @@
   "idle_after_seconds": 15,
   "fullscreen": true,
   "gpio_pull": "up",
-  "gpio_edge": "falling",
+  "gpio_edge": "rising",
   "gpio_bounce_ms": 110,
   "database_path": "data/panel.db",
   "recovery_csv_path": "data/recovery.csv",

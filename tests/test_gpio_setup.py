@@ -23,7 +23,7 @@ class GpioConfigTest(unittest.TestCase):
     def test_defaults_match_optocoupler_wiring(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = AppConfig.load(write(directory))
-            self.assertEqual((config.gpio_pull, config.gpio_edge, config.gpio_bounce_ms), ("up", "falling", 110))
+            self.assertEqual((config.gpio_pull, config.gpio_edge, config.gpio_bounce_ms), ("up", "rising", 110))
 
     def test_physical_pin_numbers_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -53,10 +53,14 @@ class AppConfig:
     counters: tuple[CounterConfig, ...]
     source: Path | None = None
     # Rangkaian baku: proximity 24 V → optocoupler → kolektor menarik pin ke
-    # GND saat sensor aktif. Karena itu pull-up internal + tepi turun.
+    # GND selama produk di depan sensor. Pull-up internal + tepi naik: satu
+    # pulsa dihitung saat produk lepas dari sensor (revisi 16 Okt 2026).
     gpio_pull: str = "up"
-    gpio_edge: str = "falling"
+    gpio_edge: str = "rising"
     gpio_bounce_ms: int = 110
+    # Hash PBKDF2 password tombol PENGATURAN (lihat panel_password.py); kosong =
+    # device token dipakai sebagai password sementara.
+    settings_password_hash: str = ""
 
     def counter_for(self, dal: str) -> CounterConfig | None:
         key = dal.strip().upper()
@@ -133,8 +137,9 @@ class AppConfig:
             counters=counters,
             source=source,
             gpio_pull=choice(raw, "gpio_pull", ("up", "down", "off"), "up"),
-            gpio_edge=choice(raw, "gpio_edge", ("falling", "rising", "both"), "falling"),
+            gpio_edge=choice(raw, "gpio_edge", ("falling", "rising", "both"), "rising"),
             gpio_bounce_ms=min(1000, max(1, int(raw.get("gpio_bounce_ms", 110)))),
+            settings_password_hash=str(raw.get("settings_password_hash", "")).strip(),
         )
 
 

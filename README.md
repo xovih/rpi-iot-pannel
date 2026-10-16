@@ -71,6 +71,12 @@ generator, lalu buka panel lagi.
   tabel antrean/operator sehingga posisi input tidak bergeser.
 - Jendela kiosk tidak punya tombol minimize/close; tutup aplikasi lewat ✕
   dengan konfirmasi.
+- Tombol **⚙ PENGATURAN** (kanan bawah, berpassword) untuk teknisi: ubah
+  alamat backend, kode gateway, device token, mode GPIO, dan password, lalu
+  panel dimulai ulang otomatis. Pin GPIO tetap diatur di web. Password baru
+  disimpan sebagai hash `settings_password_hash`; selama belum dibuat, device
+  token berlaku sebagai password sementara. Dapat dibuat juga dengan
+  `bash generate-config.sh --settings-password '…'`.
 
 ### Satu berkas executable (tanpa Python)
 
@@ -137,7 +143,8 @@ Sumber pin panel: backend → cache SQLite (saat offline) → `counters` di
 
 - **PyQt5 kiosk**: UI native fullscreen yang tetap menghitung saat LAN putus
   dan menerima scanner USB-HID sebagai keyboard wedge.
-- **GPIO real/mock**: `real` membaca pin BCM dengan interrupt falling-edge;
+- **GPIO real/mock**: `real` membaca pin BCM dengan interrupt rising-edge (dihitung saat produk
+  lepas dari sensor; dapat diubah di web → Pin GPIO);
   `mock` menjalankan panel di PC tanpa Raspberry Pi.
 - **SQLite outbox**: counter dan Finish tertunda tersimpan transaksional.
   Sampel outbox untuk mesin yang tidak lagi dinaungi panel dibuang.
@@ -148,6 +155,12 @@ Sumber pin panel: backend → cache SQLite (saat offline) → `counters` di
   seluruh kiriman; panel lalu memuat ulang daftar mesin.
 - **Satu instans**: kunci OS pada `data/panel.lock` mencegah dua proses
   berebut GPIO; kunci lepas otomatis bila listrik padam.
+- **Pemulihan exit tak terduga**: penanda `app_running` di SQLite. Bila panel
+  mati tanpa ditutup normal, saat dibuka lagi sesi berjalan (`state:sessions`)
+  dan tab mesin (`state:machines`) dimuat dari SQLite tanpa menunggu backend.
+  Nilai counter tersimpan langsung tampil, counter mesin itu dijeda
+  (`state:recovered`) sampai operator menekan START, lalu FINISH menyimpan ke
+  server. Dialog "Data dipulihkan" menjelaskan langkahnya.
 - **Log**: `data/panel.log` (aplikasi) dan `data/launcher.log` (skrip).
 
 ## Development

@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     if plan is not None:
         print(f"Sumber pin: {plan.source}")
     pull = args.pull or (plan.pull if plan else "up")
-    edge = args.edge or (plan.edge if plan else "falling")
+    edge = args.edge or (plan.edge if plan else "rising")
     bounce = args.bounce_ms or (plan.bounce_ms if plan else 110)
 
     if args.pins:

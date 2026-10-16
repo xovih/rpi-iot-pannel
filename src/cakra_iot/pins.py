@@ -79,7 +79,7 @@ def from_cache(raw: Any) -> PinPlan | None:
     return PinPlan(
         "cache",
         str(raw.get("pull", "up")),
-        str(raw.get("edge", "falling")),
+        str(raw.get("edge", "rising")),
         int(raw.get("bounce_ms", 110)),
         counters,
         raw.get("version"),
@@ -105,7 +105,7 @@ def from_bootstrap(bootstrap: dict[str, Any]) -> PinPlan | None:
     return PinPlan(
         "backend",
         str(gpio.get("pull", "up")),
-        str(gpio.get("edge", "falling")),
+        str(gpio.get("edge", "rising")),
         int(gpio.get("bounceMs", 110)),
         counters,
         gpio.get("version"),

@@ -28,6 +28,20 @@ class StorageTest(unittest.TestCase):
             self.assertTrue((root / "recovery.csv").read_text(encoding="utf-8").startswith("recorded_at"))
             recovered.close()
 
+    def test_unexpected_exit_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = LocalStore(root / "panel.db", root / "recovery.csv")
+            self.assertFalse(store.begin_run())
+            store.close()  # listrik padam: end_run tidak sempat dipanggil
+            store = LocalStore(root / "panel.db", root / "recovery.csv")
+            self.assertTrue(store.begin_run())
+            store.end_run()
+            store.close()
+            store = LocalStore(root / "panel.db", root / "recovery.csv")
+            self.assertFalse(store.begin_run())
+            store.close()
+
     def test_ui_state_survives_power_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
