@@ -35,6 +35,7 @@ from .config import AppConfig, CounterSlot
 from .dialogs import alert, confirm
 from .icons import play_icon, stop_icon, trash_icon
 from .gpio import GpioManager
+from .pins import CACHE_KEY, PinPlan, from_bootstrap, from_cache, from_config
 from .storage import LocalStore
 
 PURPLE = "#3212ef"
@@ -60,8 +61,9 @@ def number(value: int) -> str:
 class PanelMachine:
     """Satu tab mesin. Identitasnya **selalu** dari backend (revisi 16 Okt
     2026): kode mesin, DAL, nama, dan work center dibaca dari bootstrap sesuai
-    mesin yang dinaungi gateway pada menu Gateway / Panel IoT. Dari config
-    lokal hanya diambil pin counter yang dipasang pada DAL tersebut."""
+    mesin yang dinaungi gateway pada menu Gateway / Panel IoT. Pin counter
+    per spur juga dari backend (menu Gateway → Pin GPIO); config lokal hanya
+    cadangan untuk panel yang pinnya belum diisi di backend."""
 
     code: str
     dal: str
@@ -103,7 +105,8 @@ class FinishDialog(QDialog):
         for column, (label, value) in enumerate(
             [
                 ("QTY LOT", number(lot_qty)),
-                ("SUDAH TERPROSES", number(processed_qty)),
+                # Sama dengan TOTAL PENGERJAAN di Monitoring.
+                ("SUDAH TERPROSES", number(processed_qty + self.yield_qty)),
                 ("HASIL BAIK SESI INI", number(self.yield_qty)),
             ]
         ):
@@ -383,6 +386,13 @@ class MachinePage(QWidget):
             # kosong (mis. panel dipasang ulang di Raspberry Pi lain).
             self.operators = [{"npp": item["npp"], "name": item["name"]} for item in team]
             self.render_operators()
+        if running and self.host.store.get_state(f"session:{self.machine.code}") != self.session_token(
+            str(running["id"])
+        ):
+            # Sesi berjalan tanpa baseline lokal (START di perangkat/versi lain,
+            # atau database panel baru): hitungan sesi dimulai dari sekarang,
+            # bukan terkunci di 0 selamanya.
+            self.begin_session(str(running["id"]))
         self.queue_table.setRowCount(len(self.queue))
         select_row = 0
         for row_index, row in enumerate(self.queue):
@@ -544,15 +554,16 @@ class MachinePage(QWidget):
             return
         try:
             self.host.api.start(current["id"], [item["npp"] for item in self.operators])
-            self.host.store.start_session([slot.code for slot in self.machine.slots])
+            self.begin_session(str(current["id"]))
             self.reload_queue()
         except ApiError as exc:
             self.host.handle_api_error(exc, dialog=True)
 
     def finish(self, current: dict[str, Any]) -> None:
-        yield_qty = sum(
-            self.host.store.session_counter(slot.code) for slot in self.machine.slots
-        )
+        # Angka dialog = angka Monitoring saat FINISH ditekan: Hasil baik sesi ini
+        # = HASIL SAAT INI (dikirim sebagai yield_qty), Sudah terproses =
+        # TOTAL PENGERJAAN.
+        yield_qty = self.current_output()
         lot_qty = int(current.get("lotQty") or current["lotPeti"].get("qty") or 0)
         processed = int(current.get("processedQty") or 0)
         dialog = FinishDialog(yield_qty, lot_qty, processed, self)
@@ -636,20 +647,56 @@ class MachinePage(QWidget):
         row = self.current_queue()
         self.action.setText("FINISH" if row and row["status"] == "RUNNING" else "START")
 
+    def begin_session(self, queue_id: str) -> None:
+        """Baseline counter sesi dicatat di SQLite dan diikat ke ID antrean,
+        sehingga sesi yang dilanjutkan setelah listrik padam tetap menghitung
+        dari baseline yang sama."""
+        self.host.store.start_session([slot.code for slot in self.machine.slots])
+        self.host.store.set_state(f"session:{self.machine.code}", self.session_token(queue_id))
+
+    def session_token(self, queue_id: str) -> str:
+        # Pin/spur yang berubah di tengah sesi (mis. Spur 2 dinonaktifkan)
+        # memerlukan baseline baru untuk kode counter yang baru.
+        return f"{queue_id}|{','.join(slot.code for slot in self.machine.slots)}"
+
+    def running_row(self) -> dict[str, Any] | None:
+        return next((row for row in self.queue if row["status"] == "RUNNING"), None)
+
+    def spur_slots(self) -> list[CounterSlot | None]:
+        """Posisi kartu Spur 1 dan Spur 2. Spur yang tidak aktif/tidak ada → None."""
+        positions: list[CounterSlot | None] = [None, None]
+        for index, slot in enumerate(self.machine.slots[:2]):
+            position = (slot.slot_no or index + 1) - 1
+            if 0 <= position < 2:
+                positions[position] = slot
+        return positions
+
+    def spur_counts(self) -> list[int | None]:
+        """Hitungan sesi per spur (revisi 16 Okt 2026). Mesin satu spur hanya
+        memiliki Spur 1; spur yang tidak ada bernilai None dan dihitung 0."""
+        running = self.running_row() is not None
+        return [
+            None if slot is None else (self.host.store.session_counter(slot.code) if running else 0)
+            for slot in self.spur_slots()
+        ]
+
+    def current_output(self) -> int:
+        """HASIL SAAT INI = Spur 1 + Spur 2 (0 bila mesin satu spur)."""
+        return sum(count or 0 for count in self.spur_counts())
+
+    def total_output(self) -> int:
+        """TOTAL PENGERJAAN = akumulasi pengerjaan peti pada tahapan/work center
+        ini dari sesi-sesi sebelumnya (backend) + HASIL SAAT INI."""
+        row = self.running_row() or self.current_queue()
+        processed = int((row or {}).get("processedQty") or 0)
+        return processed + self.current_output()
+
     def refresh_counters(self) -> None:
-        current = sum(
-            self.host.store.session_counter(slot.code) for slot in self.machine.slots
-        )
-        total = sum(self.host.store.counter(slot.code) for slot in self.machine.slots)
-        self.current_card.value.setText(number(current))
-        self.total_card.value.setText(number(total))
-        for index, card in enumerate(self.slot_cards):
-            if index < len(self.machine.slots):
-                card.value.setText(
-                    number(self.host.store.session_counter(self.machine.slots[index].code))
-                )
-            else:
-                card.value.setText("—")
+        counts = self.spur_counts()
+        self.current_card.value.setText(number(self.current_output()))
+        self.total_card.value.setText(number(self.total_output()))
+        for card, count in zip(self.slot_cards, counts):
+            card.value.setText("—" if count is None else number(count))
 
 
 class PanelWindow(QMainWindow):
@@ -735,23 +782,13 @@ class PanelWindow(QMainWindow):
             application.focusChanged.connect(self.remember_input)
         self.update_heading()
 
-        self.gpio = GpioManager(config.all_slots, config.gpio_mode, self.on_pulse, config)
+        self.gpio = GpioManager(config.gpio_mode, self.on_pulse)
         self.gpio_error: str | None = None
-        try:
-            self.gpio.start()
-        except Exception as exc:  # noqa: BLE001 — galat driver GPIO beragam
-            # Panel tetap terbuka untuk antrean/operator, tetapi counter mati;
-            # teknisi harus tahu sebabnya tanpa membuka terminal.
-            self.gpio_error = str(exc) or exc.__class__.__name__
-            QTimer.singleShot(
-                500,
-                lambda: alert(
-                    self,
-                    "GPIO tidak aktif",
-                    f"Counter sensor tidak terbaca: {self.gpio_error}. Jalankan "
-                    "bash gpio-test.sh untuk diagnosis (lihat panduan pemasangan).",
-                ),
-            )
+        # Sebelum backend terjangkau, pin diambil dari salinan pemetaan backend
+        # terakhir (SQLite) agar panel yang dinyalakan tanpa jaringan tetap
+        # menghitung; bila belum pernah ada, dari config.json.
+        self.pin_plan: PinPlan = from_cache(store.get_state(CACHE_KEY)) or from_config(config)
+        self.install_pins(self.pin_plan)
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self.refresh_ui)
         self.ui_timer.start(250)
@@ -779,6 +816,11 @@ class PanelWindow(QMainWindow):
                     f"Token ini milik gateway {backend_gateway_code or 'tanpa kode'}, "
                     f"bukan {self.config.gateway_code}.",
                 )
+            backend_plan = from_bootstrap(bootstrap)
+            if backend_plan is not None:
+                self.store.set_state(CACHE_KEY, backend_plan.to_cache())
+            # Panel yang pinnya belum diisi di backend tetap memakai config.json.
+            self.install_pins(backend_plan or from_config(self.config))
             machines = [self.panel_machine(row) for row in bootstrap.get("machines", [])]
             self.apply_machines(machines)
             if not machines:
@@ -795,9 +837,33 @@ class PanelWindow(QMainWindow):
         except ApiError as exc:
             self.handle_api_error(exc)
 
+    def install_pins(self, plan: PinPlan) -> None:
+        """Memasang (ulang) GPIO bila pemetaan pin berubah — tanpa restart."""
+        if plan.signature == getattr(self.gpio.plan, "signature", None) and not self.gpio_error:
+            self.pin_plan = plan
+            return
+        self.pin_plan = plan
+        try:
+            self.gpio.apply(plan)
+            self.gpio_error = None
+        except Exception as exc:  # noqa: BLE001 — galat driver GPIO beragam
+            # Panel tetap terbuka untuk antrean/operator, tetapi counter mati;
+            # teknisi harus tahu sebabnya tanpa membuka terminal.
+            first = self.gpio_error is None
+            self.gpio_error = str(exc) or exc.__class__.__name__
+            if first:
+                QTimer.singleShot(
+                    500,
+                    lambda: alert(
+                        self,
+                        "GPIO tidak aktif",
+                        f"Counter sensor tidak terbaca: {self.gpio_error}. Jalankan "
+                        "bash gpio-test.sh untuk diagnosis (lihat panduan pemasangan).",
+                    ),
+                )
+
     def panel_machine(self, row: dict[str, Any]) -> PanelMachine:
         dal = str(row["dalCode"]).strip().upper()
-        counter = self.config.counter_for(dal)
         return PanelMachine(
             code=str(row["code"]).strip().upper(),
             dal=dal,
@@ -805,7 +871,7 @@ class PanelWindow(QMainWindow):
             work_centers=tuple(
                 str(item["code"]) for item in row.get("workCenters", []) if item.get("code")
             ),
-            slots=counter.slots if counter else (),
+            slots=self.pin_plan.slots_for(dal),
         )
 
     def apply_machines(self, machines: list[PanelMachine]) -> None:
@@ -1055,7 +1121,13 @@ class PanelWindow(QMainWindow):
             self.connection_reason = reason
         if online:
             self.connection_reason = "Backend dan device token tervalidasi."
-            gpio = "GPIO ERROR" if getattr(self, "gpio_error", None) else f"GPIO {self.config.gpio_mode}"
+            plan = getattr(self, "pin_plan", None)
+            source = f" ({plan.source})" if plan else ""
+            gpio = (
+                "GPIO ERROR"
+                if getattr(self, "gpio_error", None)
+                else f"GPIO {self.config.gpio_mode}{source}"
+            )
             self.status.setText(
                 f"ONLINE  ·  {self.config.api_base_url}  ·  {len(self.pages)} mesin  ·  "
                 f"{gpio}  ·  telemetry aktif"

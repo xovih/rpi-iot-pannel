@@ -93,14 +93,18 @@ Panduan lengkap: `CONTEXT/06-IoT-APP/01-panduan-pemasangan-panel-dan-gpio.md`.
 > ⚠️ GPIO Raspberry Pi **3,3 V, tidak toleran 5 V**. Keluaran optocoupler harus
 > menarik pin ke GND (pull-up internal) atau di-pull-up ke 3,3 V — jangan 5 V.
 
+**Pin GPIO per mesin/spur diatur di web** (Gateway / Panel IoT → **Pin GPIO**)
+dan berlaku ±10 detik tanpa restart. Pi cukup berisi alamat backend + token:
+
 ```bash
 sudo apt install -y python3-pyqt5 python3-venv python3-requests python3-rpi-lgpio
-bash generate-config.sh --token gw_live_… --gpio real --pin K.1=17 --pin K.2:SPUR1=5 --pin K.2:SPUR2=6
+bash generate-config.sh --token gw_live_… --gpio real
 bash gpio-test.sh            # cek level awal & hitung pulsa per pin (tutup panel dulu)
 ```
 
-Pengaturan GPIO di `config.json`: `gpio_pull` (`up`), `gpio_edge`
-(`falling`), `gpio_bounce_ms` (`110`). Pin selalu nomor **BCM**.
+Sumber pin panel: backend → cache SQLite (saat offline) → `counters` di
+`config.json` (hanya untuk panel yang pinnya belum diisi di web;
+`--pin DAL=PIN`). Pin selalu nomor **BCM**.
 
 ## Konfigurasi (`config.json`)
 

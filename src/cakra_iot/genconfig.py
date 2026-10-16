@@ -132,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             raw["gateway_code"] = str(bootstrap.get("code", ""))
         dals = [machine["dalCode"] for machine in bootstrap.get("machines", [])]
+        if (bootstrap.get("gpio") or {}).get("managed"):
+            print(
+                "Info: pin panel ini dikelola di web (Gateway / Panel IoT → Pin GPIO). "
+                "Pin di config.json hanya cadangan saat backend belum mengisi pin."
+            )
     raw["counters"] = apply_pins(merge_counters(dals, existing, template), args.pin)
     if args.bounce_ms:
         raw["gpio_bounce_ms"] = args.bounce_ms

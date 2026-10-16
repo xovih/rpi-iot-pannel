@@ -30,6 +30,16 @@ NAMES = {
     "I.8-2": "Bubut Pinggir 2",
 }
 
+# Pin dari backend (menu Gateway → Pin GPIO). I.8-2 sengaja hanya Spur 2
+# yang aktif (Spur 1 sedang diperbaiki).
+BACKEND_SLOTS = {
+    "I.1": [(1, [17])],
+    "I.9-1": [(1, [27])],
+    "I.9-2": [(1, [22])],
+    "I.8-1": [(1, [5]), (2, [6])],
+    "I.8-2": [(2, [16])],
+}
+
 QUEUE_ROW = {
     "id": "q-1",
     "status": "RUNNING",
@@ -61,6 +71,7 @@ class PreviewApi:
         dals = ["I.1"] if self.partial else list(NAMES)
         return {
             "code": "RPI-INT-01-TEST",
+            "gpio": {"managed": True, "pull": "up", "edge": "falling", "bounceMs": 60, "version": "v1"},
             "machines": [
                 {
                     # Kode mesin backend sengaja berbeda dari DAL: panel wajib
@@ -69,6 +80,10 @@ class PreviewApi:
                     "dalCode": dal,
                     "name": NAMES[dal],
                     "workCenters": [{"code": "1115LE01", "name": "REGANG 1 DAN 2"}],
+                    "counterSlots": [
+                        {"slotNo": no, "code": f"{dal}-SPUR{no}", "pins": pins}
+                        for no, pins in BACKEND_SLOTS[dal]
+                    ],
                 }
                 for index, dal in enumerate(dals, start=1)
             ],
@@ -158,6 +173,15 @@ def main() -> int:
             assert "#ff3b18" in window.tab_buttons[2].styleSheet()
             assert "#575252" in window.tab_buttons[3].styleSheet()
         if mode == "queue":
+            page0 = window.pages[0]
+            # Sesi RUNNING tanpa baseline lokal: hitungan mulai dari sekarang.
+            for _ in range(3):
+                window.store.increment(page0.machine.slots[0].code)
+            page0.refresh_counters()
+            assert page0.current_card.value.text() == "3", page0.current_card.value.text()
+            assert page0.slot_cards[0].value.text() == "3"
+            assert page0.slot_cards[1].value.text() == "—"
+            assert page0.total_card.value.text() == "403", page0.total_card.value.text()
             process = window.pages[0].detail.item(4, 1).text()
             assert process == "0020 REGANG POTONG (2/8) · 1115LE01 · routing v2", process
             assert window.pages[0].action.text() == "FINISH"
@@ -182,6 +206,11 @@ def main() -> int:
             )
         else:
             assert len(window.tab_buttons) == 5
+            # Pin dari backend menggantikan config.json dan tersimpan di cache.
+            assert window.pin_plan.source == "backend" and window.pin_plan.bounce_ms == 60
+            assert window.store.get_state("gpio_pins")["counters"]["I.1"][0]["code"] == "I.1-SPUR1"
+            spur2_only = next(page for page in window.pages if page.machine.dal == "I.8-2")
+            assert [slot is None for slot in spur2_only.spur_slots()] == [True, False]
         window.grab().save(str(output))
         window.close()
         app.quit()

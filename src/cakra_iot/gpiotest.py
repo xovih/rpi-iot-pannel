@@ -20,6 +20,26 @@ from pathlib import Path
 
 from .config import CAUTION_BCM_PINS, VALID_BCM_PINS, AppConfig, find_config
 from .lock import single_instance
+from .pins import CACHE_KEY, PinPlan, from_bootstrap, from_cache, from_config
+
+
+def resolve_plan(config: AppConfig) -> PinPlan:
+    """Pin yang sama dengan yang akan dipakai panel: backend → cache → config."""
+    from .api import ApiClient, ApiError
+    from .storage import LocalStore
+
+    try:
+        plan = from_bootstrap(ApiClient(config.api_base_url, config.device_token).bootstrap())
+        if plan is not None:
+            return plan
+    except ApiError as exc:
+        print(f"Backend tidak terjangkau ({exc}); memakai salinan pin terakhir.")
+    store = LocalStore(config.database_path, config.recovery_csv_path)
+    try:
+        cached = from_cache(store.get_state(CACHE_KEY))
+    finally:
+        store.close()
+    return cached or from_config(config)
 
 DRIVER_HINT = (
     "RPi.GPIO tidak terpasang. Di Raspberry Pi OS jalankan:\n"
@@ -38,7 +58,9 @@ EDGE_HINT = (
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Uji pulsa counter GPIO Panel IoT CAKRA")
     parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--pins", help="Pin BCM dipisah koma; tanpa ini memakai config.json")
+    parser.add_argument(
+        "--pins", help="Pin BCM dipisah koma; tanpa ini memakai pin panel (backend/cache/config)"
+    )
     parser.add_argument("--seconds", type=int, default=0, help="Lama uji; 0 = sampai Ctrl+C")
     parser.add_argument("--bounce-ms", type=int, default=None)
     parser.add_argument("--edge", choices=["falling", "rising", "both"], default=None)
@@ -47,16 +69,22 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = find_config(args.config)
     config = AppConfig.load(config_path) if config_path else None
-    pull = args.pull or (config.gpio_pull if config else "up")
-    edge = args.edge or (config.gpio_edge if config else "falling")
-    bounce = args.bounce_ms or (config.gpio_bounce_ms if config else 110)
+    plan = resolve_plan(config) if config and not args.pins else None
+    if plan is not None:
+        print(f"Sumber pin: {plan.source}")
+    pull = args.pull or (plan.pull if plan else "up")
+    edge = args.edge or (plan.edge if plan else "falling")
+    bounce = args.bounce_ms or (plan.bounce_ms if plan else 110)
 
     if args.pins:
         mapping = {int(pin): f"GPIO{int(pin)}" for pin in args.pins.split(",") if pin.strip()}
-    elif config and config.all_slots:
-        mapping = {pin: slot.code for slot in config.all_slots for pin in slot.pins}
+    elif plan and plan.all_slots:
+        mapping = {pin: slot.code for slot in plan.all_slots for pin in slot.pins}
     else:
-        print("Tidak ada pin untuk diuji. Isi counters di config.json atau pakai --pins 17,27.")
+        print(
+            "Tidak ada pin untuk diuji. Isi pin di web (Gateway / Panel IoT → Pin GPIO) "
+            "atau pakai --pins 17,27."
+        )
         return 2
     invalid = [pin for pin in mapping if pin not in VALID_BCM_PINS]
     if invalid:

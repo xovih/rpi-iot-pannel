@@ -20,6 +20,8 @@ CAUTION_BCM_PINS = {2: "I2C SDA", 3: "I2C SCL", 14: "UART TX", 15: "UART RX"}
 class CounterSlot:
     code: str
     pins: tuple[int, ...]
+    # 1 = Spur 1, 2 = Spur 2; 0 = belum diketahui (diisi urutan config).
+    slot_no: int = 0
 
 
 @dataclass(frozen=True)
