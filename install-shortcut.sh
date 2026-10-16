@@ -13,11 +13,13 @@ AUTOSTART=0
 [ "${1:-}" = "--autostart" ] && AUTOSTART=1
 
 if [ -x "$HERE/dist/cakra-panel" ]; then
-  EXEC="$HERE/dist/cakra-panel"
+  EXEC="\"$HERE/dist/cakra-panel\""
   WORKDIR="$HERE/dist"
 else
-  chmod +x "$HERE/run-panel.sh"
-  EXEC="$HERE/run-panel.sh"
+  # Dijalankan lewat /bin/bash, bukan langsung: GLib menolak entri desktop
+  # ("Berkas entri desktop tak valid") bila program di Exec tidak executable,
+  # dan bit executable run-panel.sh dapat hilang oleh git checkout / pull.
+  EXEC="/bin/bash \"$HERE/run-panel.sh\""
   WORKDIR="$HERE"
 fi
 
@@ -26,7 +28,7 @@ Type=Application
 Version=1.0
 Name=CAKRA Panel IoT
 Comment=Panel kiosk produksi CAKRA (antrean peti, operator, counter mesin)
-Exec=\"$EXEC\"
+Exec=$EXEC
 Path=$WORKDIR
 Icon=$HERE/deploy/cakra-panel.svg
 Terminal=false
@@ -38,6 +40,9 @@ install_entry() {
   mkdir -p "$(dirname "$target")"
   printf '%s\n' "$ENTRY" >"$target"
   chmod +x "$target"
+  if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate "$target" || echo "Peringatan: $target belum lolos validasi."
+  fi
   # Tandai tepercaya agar klik-ganda tidak bertanya "Execute?" lagi.
   gio set "$target" metadata::trusted true 2>/dev/null || true
   echo "Terpasang: $target"
