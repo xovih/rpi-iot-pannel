@@ -5,7 +5,7 @@
   "gpio_mode": "mock",
   "telemetry_hz": 1,
   "heartbeat_seconds": 30,
-  "idle_after_seconds": 15,
+  "idle_after_seconds": 180,
   "fullscreen": true,
   "gpio_pull": "up",
   "gpio_edge": "rising",

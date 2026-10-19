@@ -38,6 +38,11 @@ class CounterConfig:
     slots: tuple[CounterSlot, ...]
 
 
+#: Detik tanpa pulsa counter sebelum mesin bersesi dianggap IDLE (putusan
+#: USER 19 Okt 2026; semula 15 detik).
+IDLE_AFTER_SECONDS = 180
+
+
 @dataclass(frozen=True)
 class AppConfig:
     api_base_url: str
@@ -130,7 +135,9 @@ class AppConfig:
             gpio_mode=str(raw.get("gpio_mode", "mock")),
             telemetry_hz=max(1, int(raw.get("telemetry_hz", 1))),
             heartbeat_seconds=max(10, int(raw.get("heartbeat_seconds", 30))),
-            idle_after_seconds=max(3, int(raw.get("idle_after_seconds", 15))),
+            # Cadangan saat backend belum terjangkau; nilai berlaku dikirim
+            # backend lewat bootstrap (revisi 19 Okt 2026, baku 180 detik).
+            idle_after_seconds=max(3, int(raw.get("idle_after_seconds", IDLE_AFTER_SECONDS))),
             fullscreen=bool(raw.get("fullscreen", True)),
             database_path=local(str(raw.get("database_path", "data/panel.db"))),
             recovery_csv_path=local(str(raw.get("recovery_csv_path", "data/recovery.csv"))),

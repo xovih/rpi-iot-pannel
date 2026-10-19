@@ -60,6 +60,18 @@ def number(value: int) -> str:
     return f"{value:,}".replace(",", ".")
 
 
+IDLE_KEY = "idle_after_seconds"
+
+
+def idle_threshold(value: Any, fallback: int) -> int:
+    """Ambang IDLE yang sah (detik). Nilai backend/SQLite yang rusak diabaikan."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return seconds if 3 <= seconds <= 3600 else fallback
+
+
 @dataclass(frozen=True)
 class PanelMachine:
     """Satu tab mesin. Identitasnya **selalu** dari backend (revisi 16 Okt
@@ -685,6 +697,9 @@ class MachinePage(QWidget):
             for slot in self.spur_slots()
         ]
 
+    def slot_session_count(self, slot: CounterSlot) -> int:
+        return self.host.store.session_counter(slot.code) if self.running_row() else 0
+
     def current_output(self) -> int:
         """HASIL SAAT INI = Spur 1 + Spur 2 (0 bila mesin satu spur)."""
         return sum(count or 0 for count in self.spur_counts())
@@ -709,6 +724,11 @@ class PanelWindow(QMainWindow):
         super().__init__()
         self.config, self.api, self.store = config, api, store
         self.online = False
+        # Ambang IDLE: nilai terakhir dari backend (tersimpan di SQLite agar
+        # tetap berlaku saat offline), cadangan config.json.
+        self.idle_after_seconds = idle_threshold(
+            store.get_state(IDLE_KEY), config.idle_after_seconds
+        )
         self.device_authorized = False
         self.connection_reason = "Belum terhubung ke backend."
         self.last_telemetry_ok: datetime | None = None
@@ -848,6 +868,12 @@ class PanelWindow(QMainWindow):
                     f"Token ini milik gateway {backend_gateway_code or 'tanpa kode'}, "
                     f"bukan {self.config.gateway_code}.",
                 )
+            idle = idle_threshold(
+                (bootstrap.get("status") or {}).get("idleAfterSeconds"), self.idle_after_seconds
+            )
+            if idle != self.idle_after_seconds or self.store.get_state(IDLE_KEY) != idle:
+                self.idle_after_seconds = idle
+                self.store.set_state(IDLE_KEY, idle)
             backend_plan = from_bootstrap(bootstrap)
             if backend_plan is not None:
                 self.store.set_state(CACHE_KEY, backend_plan.to_cache())
@@ -1114,7 +1140,7 @@ class PanelWindow(QMainWindow):
         recent = any(
             pulse
             and (now - datetime.fromisoformat(pulse)).total_seconds()
-            < self.config.idle_after_seconds
+            < self.idle_after_seconds
             for pulse in pulses
         )
         return "RUN" if recent else "IDLE"
@@ -1147,6 +1173,9 @@ class PanelWindow(QMainWindow):
                         "logicalSlot": slot.code,
                         "counterTotal": self.store.counter(slot.code),
                         "delta": 0,
+                        # HASIL sesi per spur untuk dashboard denah lini
+                        # (revisi 17 Okt 2026); 0 bila tidak ada sesi.
+                        "sessionCount": page.slot_session_count(slot),
                         "status": state,
                         "recordedAt": now.isoformat(),
                     }

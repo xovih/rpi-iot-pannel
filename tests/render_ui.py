@@ -68,12 +68,14 @@ class PreviewApi:
         self.with_queue = queue
         self.last_samples: list[dict[str, Any]] = []
         self.queue_machine_codes: list[str] = []
+        self.idle_after_seconds = 180
 
     def bootstrap(self) -> dict[str, Any]:
         dals = ["I.1"] if self.partial else list(NAMES)
         return {
             "code": "RPI-INT-01-TEST",
             "gpio": {"managed": True, "pull": "up", "edge": "falling", "bounceMs": 60, "version": "v1"},
+            "status": {"idleAfterSeconds": self.idle_after_seconds},
             "machines": [
                 {
                     # Kode mesin backend sengaja berbeda dari DAL: panel wajib
@@ -322,6 +324,8 @@ def main() -> int:
             assert [page.machine.code for page in window.pages] == ["PREVIEW_1"]
             assert len(window.tab_buttons) == 1
             assert api.queue_machine_codes and set(api.queue_machine_codes) == {"PREVIEW_1"}
+            # Dashboard denah lini membaca HASIL sesi per spur dari telemetri.
+            assert all(sample["sessionCount"] == 0 for sample in api.last_samples)
             assert api.last_samples and {
                 sample["machineCode"] for sample in api.last_samples
             } == {"PREVIEW_1"}

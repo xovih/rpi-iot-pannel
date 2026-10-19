@@ -37,7 +37,7 @@ DEFAULTS: dict[str, Any] = {
     "gpio_mode": "real",
     "telemetry_hz": 1,
     "heartbeat_seconds": 30,
-    "idle_after_seconds": 15,
+    "idle_after_seconds": 180,
     "fullscreen": True,
     "database_path": "data/panel.db",
     "recovery_csv_path": "data/recovery.csv",
