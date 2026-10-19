@@ -97,3 +97,55 @@ def confirm(parent: QWidget | None, title: str, message: str, yes: str = "YA", n
     dialog = PanelDialog(parent, title, message, "question", (no, yes))
     dialog.exec_()
     return dialog.choice == yes
+
+
+class CountdownDialog(PanelDialog):
+    """Dialog dengan hitung mundur (revisi 19 Okt 2026): bila operator tidak
+    menekan apa pun, pilihan utama dijalankan otomatis saat waktunya habis.
+    Dipakai pergantian peti otomatis saat qty peti terpenuhi."""
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        title: str,
+        message: str,
+        seconds: int,
+        proceed: str,
+        hold: str,
+        tone: str = "info",
+    ) -> None:
+        super().__init__(parent, title, message, tone, (hold, proceed))
+        from PyQt5.QtCore import QTimer
+
+        self.proceed_label = proceed
+        self.remaining = seconds
+        self.countdown = QLabel(objectName="dialogCountdown", alignment=Qt.AlignCenter)
+        self.countdown.setStyleSheet(
+            f"font-size:22px;font-weight:900;color:{PURPLE};padding:6px;"
+            "background:#eef0ff;border-radius:10px;"
+        )
+        layout = self.layout()
+        layout.insertWidget(1, self.countdown)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(1000)
+        self.render()
+
+    def render(self) -> None:
+        self.countdown.setText(f"{self.proceed_label} otomatis dalam {self.remaining} detik")
+
+    def tick(self) -> None:
+        self.remaining -= 1
+        if self.remaining <= 0:
+            self.timer.stop()
+            self.finish(self.proceed_label)
+            return
+        self.render()
+
+    def finish(self, value: str) -> None:
+        self.timer.stop()
+        super().finish(value)
+
+    @property
+    def proceeded(self) -> bool:
+        return self.choice == self.proceed_label

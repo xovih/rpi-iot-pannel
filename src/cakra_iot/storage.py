@@ -74,11 +74,15 @@ class LocalStore:
             ).fetchone()
         return str(row["last_pulse_at"]) if row and row["last_pulse_at"] else None
 
-    def start_session(self, slot_codes: list[str]) -> None:
-        """Simpan baseline tanpa mereset total counter monotonik."""
+    def start_session(self, slot_codes: list[str], carry: dict[str, int] | None = None) -> None:
+        """Simpan baseline tanpa mereset total counter monotonik.
+
+        `carry` (revisi 19 Okt 2026): pulsa yang sudah terlanjur masuk setelah
+        peti sebelumnya penuh dibawa ke sesi baru — baseline dimundurkan
+        sebanyak itu per spur."""
         with self._lock, self._db:
             for code in slot_codes:
-                total = self.counter(code)
+                total = max(0, self.counter(code) - max(0, (carry or {}).get(code, 0)))
                 self._db.execute(
                     """INSERT INTO runtime_state(key, value) VALUES (?, ?)
                        ON CONFLICT(key) DO UPDATE SET value = excluded.value""",

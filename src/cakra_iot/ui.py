@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
 
 from .api import ApiClient, ApiError
 from .config import AppConfig, CounterSlot
-from .dialogs import alert, confirm
+from .dialogs import CountdownDialog, alert, confirm
 from .icons import play_icon, stop_icon, trash_icon
 from .keyboard import OnScreenKeyboard
 from .panel_password import Gatekeeper
@@ -232,6 +232,12 @@ class MachinePage(QWidget):
         self.machine = machine
         self.host = host
         self.queue: list[dict[str, Any]] = []
+        # Pergantian peti otomatis (revisi 19 Okt 2026): hitungan per spur saat
+        # TOTAL PENGERJAAN tepat mencapai qty peti. Pulsa sesudahnya milik peti
+        # berikutnya.
+        self.full_queue_id: str | None = None
+        self.full_snapshot: dict[str, int] = {}
+        self.changeover_declined: set[str] = set()
         # Operator terinput dipulihkan dari SQLite: setelah listrik padam
         # operator tidak perlu memindai ulang NPP-nya.
         self.operators: list[dict[str, str]] = list(
@@ -604,6 +610,141 @@ class MachinePage(QWidget):
         self.host.warning(
             "Jaringan terputus. Finish aman di SQLite outbox dan akan dikirim ulang."
         )
+
+    # ── Pergantian peti otomatis (revisi 19 Okt 2026) ──────────────────────
+
+    CHANGEOVER_SECONDS = 10
+
+    @staticmethod
+    def lot_numbers(row: dict[str, Any]) -> tuple[int, int]:
+        """(qty peti, sudah terproses sebelum sesi ini) untuk tahapan ini."""
+        lot_qty = int(row.get("lotQty") or (row.get("lotPeti") or {}).get("qty") or 0)
+        return lot_qty, int(row.get("processedQty") or 0)
+
+    def check_full(self) -> None:
+        """Dipanggil tiap pulsa. Saat TOTAL PENGERJAAN tepat mencapai qty peti,
+        hitungan per spur dibekukan dan popup hitung mundur dijadwalkan."""
+        row = self.running_row()
+        if row is None or self.recovered:
+            return
+        queue_id = str(row["id"])
+        if queue_id == self.full_queue_id or queue_id in self.changeover_declined:
+            return
+        lot_qty, processed = self.lot_numbers(row)
+        if lot_qty <= 0 or processed + self.current_output() < lot_qty:
+            return
+        self.full_queue_id = queue_id
+        self.full_snapshot = {
+            slot.code: self.host.store.session_counter(slot.code) for slot in self.machine.slots
+        }
+        QTimer.singleShot(0, self.run_changeover)
+
+    def next_queued(self, after_id: str) -> dict[str, Any] | None:
+        return next(
+            (row for row in self.queue if row["status"] != "RUNNING" and str(row["id"]) != after_id),
+            None,
+        )
+
+    def run_changeover(self) -> None:
+        row = self.running_row()
+        if row is None or str(row["id"]) != self.full_queue_id:
+            self.full_queue_id = None
+            return
+        queue_id = str(row["id"])
+        lot_qty, processed = self.lot_numbers(row)
+        peti = row["lotPeti"]["petiId"]
+        following = self.next_queued(queue_id)
+        online = self.host.online and self.host.device_authorized
+        if following and online:
+            plan = (
+                f"Peti {peti} sudah penuh ({number(lot_qty)}/{number(lot_qty)}). Peti ini di-FINISH "
+                f"otomatis lalu peti berikutnya {following['lotPeti']['petiId']} dimulai dengan "
+                "operator yang sama. Pulsa yang masuk sejak peti penuh dihitung untuk peti berikutnya."
+            )
+        elif following:
+            plan = (
+                f"Peti {peti} sudah penuh. Jaringan terputus: FINISH disimpan di outbox, peti "
+                f"berikutnya {following['lotPeti']['petiId']} di-START manual setelah online."
+            )
+        else:
+            plan = (
+                f"Peti {peti} sudah penuh ({number(lot_qty)}/{number(lot_qty)}) dan tidak ada peti "
+                "lain di antrean. Peti di-FINISH otomatis; scan peti berikutnya untuk melanjutkan."
+            )
+        dialog = CountdownDialog(
+            self,
+            "Peti penuh — ganti peti",
+            plan + " Tekan TAHAN untuk menyelesaikannya sendiri.",
+            self.CHANGEOVER_SECONDS,
+            "LANJUT",
+            "TAHAN",
+        )
+        dialog.exec_()
+        if not dialog.proceeded:
+            # Operator memilih menyelesaikan sendiri lewat FINISH; jangan
+            # tanyakan lagi untuk peti ini.
+            self.changeover_declined.add(queue_id)
+            self.full_queue_id = None
+            return
+        self.auto_finish(row, lot_qty, processed, following)
+
+    def auto_finish(
+        self,
+        row: dict[str, Any],
+        lot_qty: int,
+        processed: int,
+        following: dict[str, Any] | None,
+    ) -> None:
+        snapshot = dict(self.full_snapshot)
+        yield_qty = min(sum(snapshot.values()), max(0, lot_qty - processed))
+        # Pulsa yang masuk selama popup tampil → peti berikutnya.
+        carry = {
+            code: max(0, self.host.store.session_counter(code) - snapshot.get(code, 0))
+            for code in snapshot
+        }
+        payload = {
+            "queue_id": row["id"],
+            "event_id": str(uuid.uuid4()),
+            "yield_qty": yield_qty,
+            "scrap_qty": 0,
+            "reason": None,
+            "keep_in_queue": False,
+        }
+        self.full_queue_id = None
+        self.full_snapshot = {}
+        online = self.host.online and self.host.device_authorized
+        finished_online = False
+        if online:
+            try:
+                self.host.api.finish(**payload)
+                finished_online = True
+            except ApiError as exc:
+                if exc.status_code is not None:
+                    self.host.handle_api_error(exc, dialog=True)
+                    self.reload_queue()
+                    return
+                self.host.handle_api_error(exc)
+        if not finished_online:
+            self.host.store.enqueue(payload["event_id"], "finish", payload)
+            self.queue = [item for item in self.queue if item["id"] != row["id"]]
+            self.render_queue()
+            self.host.warning(
+                "Jaringan terputus. Finish peti penuh aman di SQLite outbox; START peti "
+                "berikutnya setelah panel online."
+            )
+            return
+        if following and self.operators:
+            try:
+                self.host.api.start(following["id"], [item["npp"] for item in self.operators])
+                self.host.store.start_session([slot.code for slot in self.machine.slots], carry)
+                self.host.store.set_state(
+                    f"session:{self.machine.code}", self.session_token(str(following["id"]))
+                )
+            except ApiError as exc:
+                self.host.handle_api_error(exc, dialog=True)
+        elif following:
+            self.host.warning("Peti berikutnya belum dimulai: belum ada operator terinput.")
+        self.reload_queue()
 
     def current_queue_id(self) -> str | None:
         row = self.queue_table.currentRow()
@@ -1127,6 +1268,10 @@ class PanelWindow(QMainWindow):
         if slot_code in self.paused_slots:
             return
         self.store.increment(slot_code)
+        # Peti penuh → pergantian peti otomatis (revisi 19 Okt 2026).
+        for page in self.pages:
+            if any(slot.code == slot_code for slot in page.machine.slots):
+                page.check_full()
 
     def refresh_ui(self) -> None:
         for page in self.pages:
